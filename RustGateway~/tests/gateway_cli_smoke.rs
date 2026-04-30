@@ -1,0 +1,1987 @@
+use serde_json::Value;
+use std::{
+    fs,
+    io::{BufRead, BufReader, Write},
+    net::TcpListener,
+    os::unix::fs::PermissionsExt,
+    path::Path,
+    process::{Child, Command, Stdio},
+    thread,
+    time::{Duration, Instant},
+};
+
+const TOKEN: &str = "lux-cli-smoke-token";
+
+struct GatewayProcess {
+    child: Child,
+}
+
+impl Drop for GatewayProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn cli_server_starts_and_enforces_header_auth_and_origin_policy() {
+    let port = reserve_local_port();
+    let _gateway = start_gateway(port);
+    wait_for_health(port);
+
+    assert_eq!(
+        websocket_status(
+            port,
+            "/events?role=publisher&client_id=cli-smoke",
+            &[("x-lux-token", TOKEN)],
+        ),
+        101
+    );
+    assert_eq!(
+        websocket_status(port, "/events?token=lux-cli-smoke-token", &[]),
+        401
+    );
+    assert_eq!(
+        websocket_status(
+            port,
+            "/events?role=publisher",
+            &[
+                ("x-lux-token", TOKEN),
+                ("Origin", "http://localhost.evil.example"),
+            ],
+        ),
+        403
+    );
+}
+
+#[test]
+fn rust_lux_cli_exposes_batch_mode_help_flags() {
+    assert_command_help_contains(&["serve", "--help"], "--token");
+    assert_command_help_contains(&["schema", "--help"], "Usage");
+    assert_command_help_contains(&["compile", "--help"], "--project-path");
+    assert_command_help_contains(&["run-tests", "--help"], "--test-platform");
+    assert_command_help_contains(&["run-tests", "--help"], "--test-results");
+    assert_command_help_contains(&["run-tests", "--help"], "--log-file");
+    assert_command_help_contains(&["unity", "status", "--help"], "--project-path");
+    assert_command_help_contains(&["unity", "context", "--help"], "--refresh");
+    assert_command_help_contains(&["unity", "backend-status", "--help"], "--project-path");
+    assert_command_help_contains(
+        &["unity", "backend-list-commands", "--help"],
+        "--project-path",
+    );
+    assert_command_help_contains(&["unity", "get-logs", "--help"], "--project-path");
+    assert_command_help_contains(&["unity", "clear-console", "--help"], "--project-path");
+    assert_command_help_contains(&["unity", "focus-window", "--help"], "--project-path");
+    assert_command_help_contains(&["unity", "launch", "--help"], "--no-wait");
+    assert_command_help_contains(&["unity", "scene-smoke", "--help"], "--object-count");
+    assert_command_help_contains(&["unity", "scene-smoke", "--help"], "--batch");
+    assert_command_help_contains(&["unity", "create-objects", "--help"], "--scene-path");
+    assert_command_help_contains(&["unity", "create-objects", "--help"], "--object-count");
+    assert_command_help_contains(&["unity", "find-game-objects", "--help"], "--search-mode");
+    assert_command_help_contains(&["unity", "find-game-objects", "--help"], "--inline-limit");
+    assert_command_help_contains(&["unity", "screenshot", "--help"], "--capture-mode");
+    assert_command_help_contains(&["unity", "screenshot", "--help"], "--annotate-elements");
+    assert_command_help_contains(&["unity", "screenshot", "--help"], "--elements-only");
+    assert_command_help_contains(&["unity", "get-hierarchy", "--help"], "--root-path");
+    assert_command_help_contains(&["unity", "get-hierarchy", "--help"], "--use-selection");
+    assert_command_help_contains(&["unity", "control-play-mode", "--help"], "--action");
+    assert_command_help_contains(&["unity", "control-play-mode", "--help"], "--wait");
+    assert_command_help_contains(&["unity", "record-input", "--help"], "--action");
+    assert_command_help_contains(&["unity", "replay-input", "--help"], "--file");
+    assert_command_help_contains(&["unity", "execute-dynamic-code", "--help"], "--code");
+    assert_command_help_contains(&["unity", "execute-dynamic-code", "--help"], "--file");
+    assert_command_help_contains(&["unity", "simulate-mouse-ui", "--help"], "--action");
+    assert_command_help_contains(&["unity", "simulate-mouse-ui", "--help"], "--x");
+    assert_command_help_contains(&["unity", "simulate-mouse-ui", "--help"], "--y");
+    assert_command_help_contains(&["unity", "simulate-keyboard", "--help"], "--action");
+    assert_command_help_contains(&["unity", "simulate-keyboard", "--help"], "--key");
+    assert_command_help_contains(&["unity", "simulate-mouse-input", "--help"], "--button");
+    assert_command_help_contains(&["unity", "simulate-mouse-input", "--help"], "--delta-x");
+    assert_command_help_contains(&["unity", "simulate-mouse-input", "--help"], "--scroll-y");
+}
+
+#[test]
+fn rust_lux_unity_status_reads_lux_bridge_settings_without_external_settings() {
+    let temp_dir = create_temp_dir("lux-unity-status");
+    let project_root = temp_dir.join("Project");
+    let user_settings = project_root.join("UserSettings");
+    fs::create_dir_all(&user_settings).expect("create UserSettings dir");
+    fs::write(
+        user_settings.join("LuxBridgeSettings.json"),
+        r#"{
+  "schema_version": 1,
+  "protocol": "lux.unity.bridge.v1",
+  "package_name": "com.linalab.lux",
+  "package_version": "0.1.0",
+  "project_root": "/tmp/lux-project",
+  "rust_gateway_path": "/tmp/lux/RustGateway~",
+  "unity_server_port": null,
+  "generated_at_utc": "2026-04-30T00:00:00Z"
+}
+"#,
+    )
+    .expect("write LuxBridgeSettings.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "status",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+        ])
+        .output()
+        .expect("run lux unity status");
+
+    assert!(
+        output.status.success(),
+        "lux unity status failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status: Value = serde_json::from_slice(&output.stdout).expect("status JSON");
+    assert_eq!(status["protocol"], "lux.unity.bridge.v1");
+    assert_eq!(status["package_name"], "com.linalab.lux");
+}
+
+#[test]
+fn rust_lux_unity_backend_list_commands_reads_protocol_info() {
+    let temp_dir = create_temp_dir("lux-unity-backend-list-commands");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let discovery = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": TOKEN,
+    });
+    fs::write(bridge_dir.join("server.json"), discovery.to_string()).expect("write discovery");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept client");
+        let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        request_reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+        let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+        assert_eq!(request["command"], "get_protocol_info");
+        assert_eq!(request["token"], TOKEN);
+
+        let response = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request["requestId"],
+            "ok": true,
+            "payload": {
+                "protocolInfo": {
+                    "protocolVersion": "1",
+                    "backendVersion": "0.1.0",
+                    "commands": [
+                        "clear_lux_console",
+                        "create_lux_scene_objects",
+                        "get_lux_console_logs",
+                        "run_lux_scene_smoke"
+                    ]
+                }
+            },
+            "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+        });
+
+        stream
+            .write_all(format!("{}\n", response).as_bytes())
+            .expect("write response");
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "backend-list-commands",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+        ])
+        .output()
+        .expect("run lux unity backend-list-commands");
+
+    assert!(
+        output.status.success(),
+        "lux unity backend-list-commands failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: Value = serde_json::from_slice(&output.stdout).expect("output JSON");
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["backendVersion"], "0.1.0");
+    assert_eq!(
+        json["commands"],
+        serde_json::json!([
+            "clear_lux_console",
+            "create_lux_scene_objects",
+            "get_lux_console_logs",
+            "run_lux_scene_smoke"
+        ])
+    );
+    assert_eq!(json["capturedAtUtc"], "2026-04-30T00:00:00.0000000Z");
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn rust_lux_unity_context_reads_shared_context_file() {
+    let temp_dir = create_temp_dir("lux-unity-context");
+    let project_root = temp_dir.join("Project");
+    let user_settings = project_root.join("UserSettings");
+    fs::create_dir_all(&user_settings).expect("create UserSettings dir");
+    fs::write(
+        user_settings.join("LuxUnityContext.json"),
+        r#"{
+  "schema_version": 1,
+  "protocol": "lux.unity.context.v1",
+  "generated_at_utc": "2026-04-30T00:00:00Z",
+  "project_root": "/tmp/lux-project",
+  "unity_version": "6000.3.0f1",
+  "is_playing": false,
+  "is_paused": false,
+  "is_compiling": false,
+  "active_scene_name": "GamePlay",
+  "active_scene_path": "Assets/_Main/Scenes/GamePlay.unity",
+  "selected_object_name": "Player",
+  "selected_object_type": "UnityEngine.GameObject",
+  "selected_asset_path": "",
+  "selected_game_object_path": "GamePlay/Player",
+  "console": { "errors": 0, "warnings": 1, "logs": 2, "recent": [] }
+}
+"#,
+    )
+    .expect("write LuxUnityContext.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "context",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+        ])
+        .output()
+        .expect("run lux unity context");
+
+    assert!(
+        output.status.success(),
+        "lux unity context failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let context: Value = serde_json::from_slice(&output.stdout).expect("context JSON");
+    assert_eq!(context["protocol"], "lux.unity.context.v1");
+    assert_eq!(context["active_scene_name"], "GamePlay");
+    assert_eq!(context["console"]["warnings"], 1);
+}
+
+#[test]
+fn rust_lux_unity_get_logs_returns_console_entries() {
+    let temp_dir = create_temp_dir("lux-unity-get-logs");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let discovery = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": TOKEN,
+    });
+    fs::write(bridge_dir.join("server.json"), discovery.to_string()).expect("write discovery");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept client");
+        let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        request_reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+        let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+        assert_eq!(request["command"], "get_lux_console_logs");
+        assert_eq!(request["token"], TOKEN);
+
+        let response = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request["requestId"],
+            "ok": true,
+            "payload": {
+                "consoleLogs": {
+                    "totalCount": 3,
+                    "displayedCount": 2,
+                    "consoleLogs": [
+                        {
+                            "level": "Log",
+                            "message": "hello",
+                            "stackTrace": "",
+                            "timestampUtc": "2026-04-30T00:00:00.0000000Z"
+                        },
+                        {
+                            "level": "Warning",
+                            "message": "careful",
+                            "stackTrace": "trace",
+                            "timestampUtc": null
+                        }
+                    ]
+                }
+            },
+            "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+        });
+
+        stream
+            .write_all(format!("{}\n", response).as_bytes())
+            .expect("write response");
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "get-logs",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+        ])
+        .output()
+        .expect("run lux unity get-logs");
+
+    assert!(
+        output.status.success(),
+        "lux unity get-logs failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).expect("output JSON");
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["capturedAtUtc"], "2026-04-30T00:00:00.0000000Z");
+    assert_eq!(json["totalCount"], 3);
+    assert_eq!(json["displayedCount"], 2);
+    assert_eq!(json["consoleLogs"][0]["level"], "Log");
+    assert_eq!(
+        json["consoleLogs"][1]["timestampUtc"],
+        serde_json::Value::Null
+    );
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn rust_lux_unity_clear_console_returns_before_and_after_counts() {
+    let temp_dir = create_temp_dir("lux-unity-clear-console");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let discovery = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": TOKEN,
+    });
+    fs::write(bridge_dir.join("server.json"), discovery.to_string()).expect("write discovery");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept client");
+        let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        request_reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+        let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+        assert_eq!(request["command"], "clear_lux_console");
+        assert_eq!(request["token"], TOKEN);
+
+        let response = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request["requestId"],
+            "ok": true,
+            "payload": {
+                "consoleClearResult": {
+                    "beforeCount": 7,
+                    "afterCount": 0
+                }
+            },
+            "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+        });
+
+        stream
+            .write_all(format!("{}\n", response).as_bytes())
+            .expect("write response");
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "clear-console",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+        ])
+        .output()
+        .expect("run lux unity clear-console");
+
+    assert!(
+        output.status.success(),
+        "lux unity clear-console failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).expect("output JSON");
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["capturedAtUtc"], "2026-04-30T00:00:00.0000000Z");
+    assert_eq!(json["beforeCount"], 7);
+    assert_eq!(json["afterCount"], 0);
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn rust_lux_unity_focus_window_returns_focused_true() {
+    let temp_dir = create_temp_dir("lux-unity-focus-window");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let discovery = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": TOKEN,
+    });
+    fs::write(bridge_dir.join("server.json"), discovery.to_string()).expect("write discovery");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept client");
+        let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        request_reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+        let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+        assert_eq!(request["command"], "focus_lux_window");
+        assert_eq!(request["token"], TOKEN);
+
+        let response = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request["requestId"],
+            "ok": true,
+            "payload": {
+                "focusWindowResult": {
+                    "focused": true
+                }
+            },
+            "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+        });
+
+        stream
+            .write_all(format!("{}\n", response).as_bytes())
+            .expect("write response");
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "focus-window",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+        ])
+        .output()
+        .expect("run lux unity focus-window");
+
+    assert!(
+        output.status.success(),
+        "lux unity focus-window failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).expect("output JSON");
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["capturedAtUtc"], "2026-04-30T00:00:00.0000000Z");
+    assert_eq!(json["focused"], true);
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn rust_lux_unity_get_hierarchy_returns_hierarchy_metadata() {
+    let temp_dir = create_temp_dir("lux-unity-get-hierarchy");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let discovery = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": TOKEN,
+    });
+    fs::write(bridge_dir.join("server.json"), discovery.to_string()).expect("write discovery");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept client");
+        let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        request_reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+        let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+        assert_eq!(request["command"], "get_lux_hierarchy");
+        assert_eq!(request["token"], TOKEN);
+        assert_eq!(request["params"]["hierarchyAll"], true);
+        assert_eq!(request["params"]["hierarchyRootPath"], Value::Null);
+        assert_eq!(request["params"]["hierarchyUseSelection"], false);
+
+        let response = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request["requestId"],
+            "ok": true,
+            "payload": {
+                "getHierarchyResult": {
+                    "filePath": "/tmp/.lux/outputs/hierarchy/request.json",
+                    "fileSizeBytes": 512,
+                    "rootCount": 2,
+                    "nodeCount": 5,
+                    "activeScene": {
+                        "name": "GamePlay",
+                        "path": "Assets/_Main/Scenes/GamePlay.unity"
+                    },
+                    "filters": {
+                        "all": true,
+                        "rootPath": "",
+                        "useSelection": false
+                    }
+                }
+            },
+            "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+        });
+
+        stream
+            .write_all(format!("{}\n", response).as_bytes())
+            .expect("write response");
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "get-hierarchy",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+        ])
+        .output()
+        .expect("run lux unity get-hierarchy");
+
+    assert!(
+        output.status.success(),
+        "lux unity get-hierarchy failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).expect("output JSON");
+    assert_eq!(json["filePath"], "/tmp/.lux/outputs/hierarchy/request.json");
+    assert_eq!(json["fileSizeBytes"], 512);
+    assert_eq!(json["rootCount"], 2);
+    assert_eq!(json["nodeCount"], 5);
+    assert_eq!(json["activeScene"]["name"], "GamePlay");
+    assert_eq!(json["filters"]["all"], true);
+    assert_eq!(json["filters"]["useSelection"], false);
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn rust_lux_unity_screenshot_returns_file_metadata_and_annotations() {
+    let temp_dir = create_temp_dir("lux-unity-screenshot");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let discovery = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": TOKEN,
+    });
+    fs::write(bridge_dir.join("server.json"), discovery.to_string()).expect("write discovery");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept client");
+        let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        request_reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+        let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+        assert_eq!(request["command"], "capture_lux_screenshot");
+        assert_eq!(request["token"], TOKEN);
+        assert_eq!(request["params"]["screenshotCaptureMode"], "rendering");
+        assert_eq!(request["params"]["screenshotAnnotateElements"], true);
+        assert_eq!(request["params"]["screenshotElementsOnly"], true);
+
+        let response = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request["requestId"],
+            "ok": true,
+            "payload": {
+                "screenshotResult": {
+                    "filePath": "",
+                    "fileSizeBytes": 0,
+                    "mediaType": "image/png",
+                    "captureMode": "rendering",
+                    "annotated": true,
+                    "elementsOnly": true,
+                    "screenshotSaved": false,
+                    "annotationCount": 0,
+                    "annotatedElements": []
+                }
+            },
+            "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+        });
+
+        stream
+            .write_all(format!("{}\n", response).as_bytes())
+            .expect("write response");
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "screenshot",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+            "--capture-mode",
+            "rendering",
+            "--annotate-elements",
+            "--elements-only",
+        ])
+        .output()
+        .expect("run lux unity screenshot");
+
+    assert!(
+        output.status.success(),
+        "lux unity screenshot failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).expect("output JSON");
+    assert_eq!(json["filePath"], "");
+    assert_eq!(json["fileSizeBytes"], 0);
+    assert_eq!(json["mediaType"], "image/png");
+    assert_eq!(json["captureMode"], "rendering");
+    assert_eq!(json["elementsOnly"], true);
+    assert_eq!(json["screenshotSaved"], false);
+    assert_eq!(json["annotationCount"], 0);
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn rust_lux_unity_control_play_mode_sends_action_and_waits_for_match() {
+    let temp_dir = create_temp_dir("lux-unity-control-play-mode");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let discovery = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": TOKEN,
+    });
+    fs::write(bridge_dir.join("server.json"), discovery.to_string()).expect("write discovery");
+
+    let server = thread::spawn(move || {
+        for (expected_action, is_playing, transition_requested) in
+            [("play", false, true), ("status", true, false)]
+        {
+            let (mut stream, _) = listener.accept().expect("accept client");
+            let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+            let mut request_line = String::new();
+            request_reader
+                .read_line(&mut request_line)
+                .expect("read request line");
+            let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+            assert_eq!(request["command"], "control_lux_play_mode");
+            assert_eq!(request["token"], TOKEN);
+            assert_eq!(request["params"]["playModeAction"], expected_action);
+
+            let response = serde_json::json!({
+                "schemaVersion": 1,
+                "requestId": request["requestId"],
+                "ok": true,
+                "payload": {
+                    "playModeState": {
+                        "action": expected_action,
+                        "isPlaying": is_playing,
+                        "isPaused": false,
+                        "transitionRequested": transition_requested
+                    }
+                },
+                "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+            });
+
+            stream
+                .write_all(format!("{}\n", response).as_bytes())
+                .expect("write response");
+        }
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "control-play-mode",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+            "--action",
+            "play",
+            "--wait",
+        ])
+        .output()
+        .expect("run lux unity control-play-mode");
+
+    assert!(
+        output.status.success(),
+        "lux unity control-play-mode failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).expect("output JSON");
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["action"], "play");
+    assert_eq!(json["isPlaying"], true);
+    assert_eq!(json["isPaused"], false);
+    assert_eq!(json["transitionRequested"], false);
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn rust_lux_unity_simulate_keyboard_sends_press_key() {
+    let temp_dir = create_temp_dir("lux-unity-simulate-keyboard");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let discovery = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": TOKEN,
+    });
+    fs::write(bridge_dir.join("server.json"), discovery.to_string()).expect("write discovery");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept client");
+        let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        request_reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+        let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+        assert_eq!(request["command"], "simulate_lux_keyboard");
+        assert_eq!(request["token"], TOKEN);
+        assert_eq!(request["params"]["inputAction"], "press");
+        assert_eq!(request["params"]["inputKey"], "Space");
+        assert_eq!(request["params"]["inputDurationMs"], 75);
+
+        let response = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request["requestId"],
+            "ok": true,
+            "payload": {
+                "inputSimulationResult": {
+                    "device": "keyboard",
+                    "action": "press",
+                    "key": "Space",
+                    "button": "",
+                    "deltaX": 0.0,
+                    "deltaY": 0.0,
+                    "scrollX": 0.0,
+                    "scrollY": 0.0,
+                    "heldKeys": ["Space"],
+                    "heldButtons": [],
+                    "queuedActions": 1
+                }
+            },
+            "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+        });
+
+        stream
+            .write_all(format!("{}\n", response).as_bytes())
+            .expect("write response");
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "simulate-keyboard",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+            "--action",
+            "press",
+            "--key",
+            "Space",
+            "--duration-ms",
+            "75",
+        ])
+        .output()
+        .expect("run lux unity simulate-keyboard");
+
+    assert!(
+        output.status.success(),
+        "lux unity simulate-keyboard failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).expect("output JSON");
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["device"], "keyboard");
+    assert_eq!(json["action"], "press");
+    assert_eq!(json["key"], "Space");
+    assert_eq!(json["heldKeys"][0], "Space");
+    assert_eq!(json["queuedActions"], 1);
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn rust_lux_unity_simulate_mouse_ui_sends_eventsystem_coordinates() {
+    let temp_dir = create_temp_dir("lux-unity-simulate-mouse-ui");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let discovery = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": TOKEN,
+    });
+    fs::write(bridge_dir.join("server.json"), discovery.to_string()).expect("write discovery");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept client");
+        let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        request_reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+        let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+        assert_eq!(request["command"], "simulate_lux_mouse_ui");
+        assert_eq!(request["token"], TOKEN);
+        assert_eq!(request["params"]["mouseUiAction"], "click");
+        assert_eq!(request["params"]["mouseUiX"], 320.5);
+        assert_eq!(request["params"]["mouseUiY"], 144.25);
+
+        let response = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request["requestId"],
+            "ok": true,
+            "payload": {
+                "mouseUiResult": {
+                    "action": "click",
+                    "x": 320.5,
+                    "y": 144.25,
+                    "success": true,
+                    "targetName": "StartButton",
+                    "targetPath": "Canvas/StartButton",
+                    "raycastCount": 1,
+                    "dragActive": false
+                }
+            },
+            "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+        });
+
+        stream
+            .write_all(format!("{}\n", response).as_bytes())
+            .expect("write response");
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "simulate-mouse-ui",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+            "--action",
+            "click",
+            "--x",
+            "320.5",
+            "--y",
+            "144.25",
+        ])
+        .output()
+        .expect("run lux unity simulate-mouse-ui");
+
+    assert!(
+        output.status.success(),
+        "lux unity simulate-mouse-ui failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).expect("output JSON");
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["action"], "click");
+    assert_eq!(json["x"], 320.5);
+    assert_eq!(json["y"], 144.25);
+    assert_eq!(json["success"], true);
+    assert_eq!(json["targetName"], "StartButton");
+    assert_eq!(json["raycastCount"], 1);
+    assert_eq!(json["dragActive"], false);
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn rust_lux_unity_simulate_mouse_input_sends_smooth_delta() {
+    let temp_dir = create_temp_dir("lux-unity-simulate-mouse-input");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let discovery = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": TOKEN,
+    });
+    fs::write(bridge_dir.join("server.json"), discovery.to_string()).expect("write discovery");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept client");
+        let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        request_reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+        let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+        assert_eq!(request["command"], "simulate_lux_mouse_input");
+        assert_eq!(request["token"], TOKEN);
+        assert_eq!(request["params"]["inputAction"], "smooth-delta");
+        assert_eq!(request["params"]["inputDeltaX"], 12.0);
+        assert_eq!(request["params"]["inputDeltaY"], -4.0);
+        assert_eq!(request["params"]["inputSteps"], 3);
+
+        let response = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request["requestId"],
+            "ok": true,
+            "payload": {
+                "inputSimulationResult": {
+                    "device": "mouse",
+                    "action": "smooth-delta",
+                    "key": "",
+                    "button": "",
+                    "deltaX": 12.0,
+                    "deltaY": -4.0,
+                    "scrollX": 0.0,
+                    "scrollY": 0.0,
+                    "heldKeys": [],
+                    "heldButtons": [],
+                    "queuedActions": 3
+                }
+            },
+            "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+        });
+
+        stream
+            .write_all(format!("{}\n", response).as_bytes())
+            .expect("write response");
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "simulate-mouse-input",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+            "--action",
+            "smooth-delta",
+            "--delta-x",
+            "12",
+            "--delta-y=-4",
+            "--steps",
+            "3",
+        ])
+        .output()
+        .expect("run lux unity simulate-mouse-input");
+
+    assert!(
+        output.status.success(),
+        "lux unity simulate-mouse-input failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).expect("output JSON");
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["device"], "mouse");
+    assert_eq!(json["action"], "smooth-delta");
+    assert_eq!(json["deltaX"], 12.0);
+    assert_eq!(json["deltaY"], -4.0);
+    assert_eq!(json["queuedActions"], 3);
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn rust_lux_unity_record_input_sends_start_action_and_prints_artifact() {
+    let temp_dir = create_temp_dir("lux-unity-record-input");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let discovery = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": TOKEN,
+    });
+    fs::write(bridge_dir.join("server.json"), discovery.to_string()).expect("write discovery");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept client");
+        let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        request_reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+        let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+        assert_eq!(request["command"], "record_lux_input");
+        assert_eq!(request["token"], TOKEN);
+        assert_eq!(request["params"]["inputAction"], "start");
+
+        let response = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request["requestId"],
+            "ok": true,
+            "payload": {
+                "inputRecordResult": {
+                    "action": "start",
+                    "active": true,
+                    "frameCount": 0,
+                    "filePath": "",
+                    "fileSizeBytes": 0,
+                    "mediaType": "application/vnd.linalab.lux.input-recording+json",
+                    "message": "Input recording started."
+                }
+            },
+            "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+        });
+
+        stream
+            .write_all(format!("{}\n", response).as_bytes())
+            .expect("write response");
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "record-input",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+            "--action",
+            "start",
+        ])
+        .output()
+        .expect("run lux unity record-input");
+
+    assert!(
+        output.status.success(),
+        "lux unity record-input failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).expect("output JSON");
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["action"], "start");
+    assert_eq!(json["active"], true);
+    assert_eq!(
+        json["mediaType"],
+        "application/vnd.linalab.lux.input-recording+json"
+    );
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn rust_lux_unity_replay_input_sends_file_and_prints_status() {
+    let temp_dir = create_temp_dir("lux-unity-replay-input");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let discovery = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": TOKEN,
+    });
+    fs::write(bridge_dir.join("server.json"), discovery.to_string()).expect("write discovery");
+    let recording_path = project_root.join(".lux/outputs/input-recordings/sample.json");
+
+    let expected_path = recording_path.clone();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept client");
+        let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        request_reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+        let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+        assert_eq!(request["command"], "replay_lux_input");
+        assert_eq!(request["token"], TOKEN);
+        assert_eq!(request["params"]["inputAction"], "start");
+        assert_eq!(
+            request["params"]["inputFilePath"],
+            expected_path.to_string_lossy().to_string()
+        );
+
+        let response = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request["requestId"],
+            "ok": true,
+            "payload": {
+                "inputReplayResult": {
+                    "action": "start",
+                    "active": true,
+                    "filePath": expected_path.to_string_lossy().to_string(),
+                    "frameCount": 12,
+                    "replayedFrameCount": 0,
+                    "completed": false,
+                    "message": "Input replay is running."
+                }
+            },
+            "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+        });
+
+        stream
+            .write_all(format!("{}\n", response).as_bytes())
+            .expect("write response");
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "replay-input",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+            "--action",
+            "start",
+            "--file",
+            recording_path.to_str().expect("recording path UTF-8"),
+        ])
+        .output()
+        .expect("run lux unity replay-input");
+
+    assert!(
+        output.status.success(),
+        "lux unity replay-input failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).expect("output JSON");
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["action"], "start");
+    assert_eq!(json["active"], true);
+    assert_eq!(json["frameCount"], 12);
+    assert_eq!(json["replayedFrameCount"], 0);
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn rust_lux_unity_execute_dynamic_code_loads_file_and_prints_result() {
+    let temp_dir = create_temp_dir("lux-unity-execute-dynamic-code");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+    let code_path = temp_dir.join("snippet.csx");
+    let code = "Debug.Log(\"hello dynamic\");";
+    fs::write(&code_path, code).expect("write dynamic code file");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let discovery = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": TOKEN,
+    });
+    fs::write(bridge_dir.join("server.json"), discovery.to_string()).expect("write discovery");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept client");
+        let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        request_reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+        let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+        assert_eq!(request["command"], "execute_lux_dynamic_code");
+        assert_eq!(request["token"], TOKEN);
+        assert_eq!(request["params"]["dynamicCode"], code);
+
+        let response = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request["requestId"],
+            "ok": true,
+            "payload": {
+                "dynamicCodeResult": {
+                    "success": true,
+                    "action": "compile_and_execute",
+                    "result": "",
+                    "resultType": "void",
+                    "message": "Dynamic code executed.",
+                    "diagnostics": [],
+                    "logs": [
+                        {
+                            "level": "Log",
+                            "message": "hello dynamic",
+                            "stackTrace": "",
+                            "timestampUtc": "2026-04-30T00:00:00.0000000Z"
+                        }
+                    ],
+                    "elapsedTimeMs": 12
+                }
+            },
+            "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+        });
+
+        stream
+            .write_all(format!("{}\n", response).as_bytes())
+            .expect("write response");
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "execute-dynamic-code",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+            "--file",
+            code_path.to_str().expect("code path UTF-8"),
+        ])
+        .output()
+        .expect("run lux unity execute-dynamic-code");
+
+    assert!(
+        output.status.success(),
+        "lux unity execute-dynamic-code failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).expect("output JSON");
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["success"], true);
+    assert_eq!(json["action"], "compile_and_execute");
+    assert_eq!(json["resultType"], "void");
+    assert_eq!(json["logs"][0]["message"], "hello dynamic");
+    assert_eq!(json["elapsedTimeMs"], 12);
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn rust_lux_unity_execute_dynamic_code_sends_inline_code_and_prints_result() {
+    let temp_dir = create_temp_dir("lux-unity-execute-dynamic-code-inline");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+    let code = "return 42;";
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let discovery = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": TOKEN,
+    });
+    fs::write(bridge_dir.join("server.json"), discovery.to_string()).expect("write discovery");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept client");
+        let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        request_reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+        let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+        assert_eq!(request["command"], "execute_lux_dynamic_code");
+        assert_eq!(request["token"], TOKEN);
+        assert_eq!(request["params"]["dynamicCode"], code);
+        assert_eq!(request["params"]["actor"], "lux-cli");
+
+        let response = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request["requestId"],
+            "ok": true,
+            "payload": {
+                "dynamicCodeResult": {
+                    "success": true,
+                    "action": "compile_and_execute",
+                    "result": "42",
+                    "resultType": "System.Int32",
+                    "message": "Dynamic code executed.",
+                    "diagnostics": [],
+                    "logs": [],
+                    "elapsedTimeMs": 7
+                }
+            },
+            "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+        });
+
+        stream
+            .write_all(format!("{}\n", response).as_bytes())
+            .expect("write response");
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "execute-dynamic-code",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+            "--code",
+            code,
+        ])
+        .output()
+        .expect("run lux unity execute-dynamic-code --code");
+
+    assert!(
+        output.status.success(),
+        "lux unity execute-dynamic-code --code failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).expect("output JSON");
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["success"], true);
+    assert_eq!(json["action"], "compile_and_execute");
+    assert_eq!(json["result"], "42");
+    assert_eq!(json["resultType"], "System.Int32");
+    assert_eq!(json["elapsedTimeMs"], 7);
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn rust_lux_unity_launch_waits_for_bridge_readiness() {
+    let temp_dir = create_temp_dir("lux-unity-launch-wait");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(project_root.join("Assets")).expect("create Assets");
+    fs::create_dir_all(project_root.join("ProjectSettings")).expect("create ProjectSettings");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+    fs::write(
+        project_root.join("ProjectSettings/ProjectVersion.txt"),
+        "m_EditorVersion: 6000.3.0f1\n",
+    )
+    .expect("write project version");
+
+    let args_capture = temp_dir.join("captured-launch-args.txt");
+    let discovery_path = bridge_dir.join("server.json");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let token = TOKEN;
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept client");
+        let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        request_reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+        let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+        assert_eq!(request["command"], "ping");
+        assert_eq!(request["token"], token);
+
+        let response = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request["requestId"],
+            "ok": true,
+            "payload": {
+                "ping": {
+                    "status": "ok"
+                }
+            },
+            "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+        });
+
+        stream
+            .write_all(format!("{}\n", response).as_bytes())
+            .expect("write response");
+    });
+
+    let fake_unity = temp_dir.join("fake-unity-launch-wait.sh");
+    fs::write(
+        &fake_unity,
+        format!(
+            "#!/bin/sh\nsleep 0.25\necho \"$@\" > '{}'\ncat > '{}' <<'JSON'\n{{\"host\":\"127.0.0.1\",\"port\":{},\"token\":\"{}\"}}\nJSON\nexit 0\n",
+            args_capture.display(),
+            discovery_path.display(),
+            port,
+            token
+        ),
+    )
+    .expect("write fake Unity");
+    make_executable(&fake_unity);
+
+    let started = Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "launch",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+        ])
+        .env("LUX_UNITY_EDITOR", &fake_unity)
+        .output()
+        .expect("run lux unity launch");
+    let elapsed = started.elapsed();
+
+    assert!(
+        output.status.success(),
+        "lux unity launch failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        elapsed >= Duration::from_millis(200),
+        "expected launch to wait for bridge readiness, elapsed={elapsed:?}"
+    );
+    wait_for_path(&args_capture);
+    let captured_args = fs::read_to_string(&args_capture).expect("read captured args");
+    assert!(
+        captured_args.contains("-projectPath"),
+        "expected -projectPath in args: {captured_args}"
+    );
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn rust_lux_unity_launch_no_wait_returns_immediately() {
+    let temp_dir = create_temp_dir("lux-unity-launch-no-wait");
+    let project_root = temp_dir.join("Project");
+    fs::create_dir_all(project_root.join("Assets")).expect("create Assets");
+    fs::create_dir_all(project_root.join("ProjectSettings")).expect("create ProjectSettings");
+    fs::write(
+        project_root.join("ProjectSettings/ProjectVersion.txt"),
+        "m_EditorVersion: 6000.3.0f1\n",
+    )
+    .expect("write project version");
+
+    let args_capture = temp_dir.join("captured-launch-no-wait-args.txt");
+    let fake_unity = temp_dir.join("fake-unity-launch-no-wait.sh");
+    fs::write(
+        &fake_unity,
+        format!(
+            "#!/bin/sh\nsleep 0.5\necho \"$@\" > '{}'\nexit 0\n",
+            args_capture.display()
+        ),
+    )
+    .expect("write fake Unity");
+    make_executable(&fake_unity);
+
+    let started = Instant::now();
+    let status = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "launch",
+            "--no-wait",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+        ])
+        .env("LUX_UNITY_EDITOR", &fake_unity)
+        .status()
+        .expect("run lux unity launch --no-wait");
+    let elapsed = started.elapsed();
+
+    assert!(status.success());
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "expected --no-wait to return immediately, elapsed={elapsed:?}"
+    );
+    wait_for_path(&args_capture);
+    let captured_args = fs::read_to_string(&args_capture).expect("read captured args");
+    assert!(
+        captured_args.contains("-projectPath"),
+        "expected -projectPath in args: {captured_args}"
+    );
+}
+
+#[test]
+fn rust_lux_unity_context_refresh_launches_unity_batch_mode() {
+    let temp_dir = create_temp_dir("lux-unity-context-refresh");
+    let project_root = temp_dir.join("Project");
+    fs::create_dir_all(project_root.join("Assets")).expect("create Assets");
+    fs::create_dir_all(project_root.join("ProjectSettings")).expect("create ProjectSettings");
+    fs::create_dir_all(project_root.join("UserSettings")).expect("create UserSettings");
+    fs::write(
+        project_root.join("ProjectSettings/ProjectVersion.txt"),
+        "m_EditorVersion: 6000.3.0f1\n",
+    )
+    .expect("write project version");
+
+    let args_capture = temp_dir.join("captured-context-refresh-args.txt");
+    let context_path = project_root.join("UserSettings/LuxUnityContext.json");
+    let fake_unity = temp_dir.join("fake-unity-context-refresh.sh");
+    fs::write(
+        &fake_unity,
+        format!(
+            "#!/bin/sh\necho \"$@\" > '{}'\ncat > '{}' <<'JSON'\n{{\"schema_version\":1,\"protocol\":\"lux.unity.context.v1\",\"active_scene_name\":\"RefreshScene\",\"console\":{{\"errors\":0,\"warnings\":0,\"logs\":0,\"recent\":[]}}}}\nJSON\nexit 0\n",
+            args_capture.display(),
+            context_path.display()
+        ),
+    )
+    .expect("write fake Unity");
+    make_executable(&fake_unity);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "context",
+            "--refresh",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+        ])
+        .env("LUX_UNITY_EDITOR", &fake_unity)
+        .output()
+        .expect("run lux unity context --refresh");
+
+    assert!(
+        output.status.success(),
+        "lux unity context --refresh failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    wait_for_path(&args_capture);
+    let captured_args = fs::read_to_string(&args_capture).expect("read captured args");
+    assert!(
+        captured_args.contains("Linalab.Lux.Editor.LuxUnityContext.Refresh"),
+        "expected context refresh executeMethod in args: {captured_args}"
+    );
+
+    let context: Value = serde_json::from_slice(&output.stdout).expect("context JSON");
+    assert_eq!(context["protocol"], "lux.unity.context.v1");
+    assert_eq!(context["active_scene_name"], "RefreshScene");
+}
+
+#[test]
+fn rust_lux_compile_launches_unity_batch_mode() {
+    let temp_dir = create_temp_dir("lux-compile-batch");
+    let project_root = temp_dir.join("Project");
+    fs::create_dir_all(project_root.join("Assets")).expect("create Assets");
+    fs::create_dir_all(project_root.join("ProjectSettings")).expect("create ProjectSettings");
+    fs::write(
+        project_root.join("ProjectSettings/ProjectVersion.txt"),
+        "m_EditorVersion: 6000.3.0f1\n",
+    )
+    .expect("write project version");
+
+    let compile_result_path = project_root.join("TestResults/CompileResult.json");
+    let fake_unity = temp_dir.join("fake-unity-compile.sh");
+    fs::write(
+        &fake_unity,
+        format!(
+            "#!/bin/sh\nmkdir -p '{}/TestResults'\necho '{{\"ok\":true}}' > '{}/TestResults/CompileResult.json'\nexit 0\n",
+            project_root.display(),
+            project_root.display(),
+        ),
+    )
+    .expect("write fake Unity");
+    make_executable(&fake_unity);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "compile",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+        ])
+        .env("LUX_UNITY_EDITOR", &fake_unity)
+        .output()
+        .expect("run lux compile in batch mode");
+
+    assert!(
+        output.status.success(),
+        "lux compile failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"ok\""),
+        "expected ok in stdout, got: {stdout}"
+    );
+    assert!(
+        compile_result_path.exists(),
+        "CompileResult.json should exist"
+    );
+}
+
+#[test]
+fn rust_lux_compile_reports_failure_when_unity_exits_nonzero() {
+    let temp_dir = create_temp_dir("lux-compile-fail");
+    let project_root = temp_dir.join("Project");
+    fs::create_dir_all(project_root.join("Assets")).expect("create Assets");
+    fs::create_dir_all(project_root.join("ProjectSettings")).expect("create ProjectSettings");
+    fs::write(
+        project_root.join("ProjectSettings/ProjectVersion.txt"),
+        "m_EditorVersion: 6000.3.0f1\n",
+    )
+    .expect("write project version");
+
+    let fake_unity = temp_dir.join("fake-unity-fail.sh");
+    fs::write(&fake_unity, "#!/bin/sh\nexit 1\n").expect("write fake Unity");
+    make_executable(&fake_unity);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "compile",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+        ])
+        .env("LUX_UNITY_EDITOR", &fake_unity)
+        .output()
+        .expect("run lux compile expecting failure");
+
+    assert!(
+        !output.status.success(),
+        "lux compile should fail when Unity exits nonzero"
+    );
+}
+
+#[test]
+fn rust_lux_compile_removes_stale_result_before_failed_unity_launch() {
+    let temp_dir = create_temp_dir("lux-compile-stale-fail");
+    let project_root = temp_dir.join("Project");
+    fs::create_dir_all(project_root.join("Assets")).expect("create Assets");
+    fs::create_dir_all(project_root.join("ProjectSettings")).expect("create ProjectSettings");
+    fs::create_dir_all(project_root.join("TestResults")).expect("create TestResults");
+    fs::write(
+        project_root.join("ProjectSettings/ProjectVersion.txt"),
+        "m_EditorVersion: 6000.3.0f1\n",
+    )
+    .expect("write project version");
+    fs::write(
+        project_root.join("TestResults/CompileResult.json"),
+        "{\"ok\":true,\"message\":\"stale success\"}",
+    )
+    .expect("write stale compile result");
+
+    let fake_unity = temp_dir.join("fake-unity-stale-fail.sh");
+    fs::write(&fake_unity, "#!/bin/sh\nexit 1\n").expect("write fake Unity");
+    make_executable(&fake_unity);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "compile",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+        ])
+        .env("LUX_UNITY_EDITOR", &fake_unity)
+        .output()
+        .expect("run lux compile expecting stale-result failure");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !output.status.success(),
+        "lux compile should fail when Unity exits nonzero"
+    );
+    assert!(
+        stdout.contains("\"ok\": false"),
+        "expected truthful failure JSON, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("stale success"),
+        "stale CompileResult.json leaked into stdout: {stdout}"
+    );
+}
+
+#[test]
+fn rust_lux_run_tests_launches_unity_batch_mode() {
+    let temp_dir = create_temp_dir("lux-run-tests-batch");
+    let project_root = temp_dir.join("Project");
+    fs::create_dir_all(project_root.join("Assets")).expect("create Assets");
+    fs::create_dir_all(project_root.join("ProjectSettings")).expect("create ProjectSettings");
+    fs::write(
+        project_root.join("ProjectSettings/ProjectVersion.txt"),
+        "m_EditorVersion: 6000.3.0f1\n",
+    )
+    .expect("write project version");
+
+    let args_capture = temp_dir.join("captured-args.txt");
+    let fake_unity = temp_dir.join("fake-unity-tests.sh");
+    fs::write(
+        &fake_unity,
+        format!(
+            "#!/bin/sh\necho \"$@\" > '{}'\nexit 0\n",
+            args_capture.display()
+        ),
+    )
+    .expect("write fake Unity");
+    make_executable(&fake_unity);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "run-tests",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+            "--test-platform",
+            "EditMode",
+        ])
+        .env("LUX_UNITY_EDITOR", &fake_unity)
+        .output()
+        .expect("run lux run-tests in batch mode");
+
+    assert!(
+        output.status.success(),
+        "lux run-tests failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    wait_for_path(&args_capture);
+    let captured_args = fs::read_to_string(&args_capture).expect("read captured args");
+    assert!(
+        captured_args.contains("-runTests"),
+        "expected -runTests in args: {captured_args}"
+    );
+    assert!(
+        captured_args.contains("-batchmode"),
+        "expected -batchmode in args: {captured_args}"
+    );
+    assert!(
+        captured_args.contains("-testPlatform"),
+        "expected -testPlatform in args: {captured_args}"
+    );
+    assert!(
+        captured_args.contains("EditMode"),
+        "expected EditMode in args: {captured_args}"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"ok\""),
+        "expected ok in stdout, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("EditMode"),
+        "expected EditMode in stdout, got: {stdout}"
+    );
+}
+
+#[test]
+fn rust_lux_run_tests_with_playmode_platform() {
+    let temp_dir = create_temp_dir("lux-run-tests-playmode");
+    let project_root = temp_dir.join("Project");
+    fs::create_dir_all(project_root.join("Assets")).expect("create Assets");
+    fs::create_dir_all(project_root.join("ProjectSettings")).expect("create ProjectSettings");
+    fs::write(
+        project_root.join("ProjectSettings/ProjectVersion.txt"),
+        "m_EditorVersion: 6000.3.0f1\n",
+    )
+    .expect("write project version");
+
+    let args_capture = temp_dir.join("captured-args-playmode.txt");
+    let fake_unity = temp_dir.join("fake-unity-playmode.sh");
+    fs::write(
+        &fake_unity,
+        format!(
+            "#!/bin/sh\necho \"$@\" > '{}'\nexit 0\n",
+            args_capture.display()
+        ),
+    )
+    .expect("write fake Unity");
+    make_executable(&fake_unity);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "run-tests",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+            "--test-platform",
+            "PlayMode",
+        ])
+        .env("LUX_UNITY_EDITOR", &fake_unity)
+        .output()
+        .expect("run lux run-tests PlayMode");
+
+    assert!(output.status.success());
+    wait_for_path(&args_capture);
+    let captured_args = fs::read_to_string(&args_capture).expect("read captured args");
+    assert!(
+        captured_args.contains("PlayMode"),
+        "expected PlayMode in args: {captured_args}"
+    );
+}
+
+#[test]
+fn rust_lux_auto_detects_unity_path_from_project_version() {
+    let temp_dir = create_temp_dir("lux-auto-detect");
+    let project_root = temp_dir.join("Project");
+    fs::create_dir_all(project_root.join("Assets")).expect("create Assets");
+    fs::create_dir_all(project_root.join("ProjectSettings")).expect("create ProjectSettings");
+    fs::write(
+        project_root.join("ProjectSettings/ProjectVersion.txt"),
+        "m_EditorVersion: 99999.0.0f1\n",
+    )
+    .expect("write project version");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "compile",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+        ])
+        .output()
+        .expect("run lux compile with non-existent Unity");
+
+    assert!(!output.status.success(), "should fail when Unity not found");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("99999.0.0f1") || stderr.contains("LUX_UNITY_EDITOR"),
+        "should mention version or LUX_UNITY_EDITOR env, got: {stderr}"
+    );
+}
+
+fn assert_command_help_contains(args: &[&str], expected: &str) {
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args(args)
+        .output()
+        .expect("run lux help command");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("help output is UTF-8");
+    assert!(
+        stdout.contains(expected),
+        "expected help output to contain {expected:?}, got:\n{stdout}"
+    );
+}
+
+fn make_executable(path: &Path) {
+    let mut permissions = fs::metadata(path).expect("read metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("set executable");
+}
+
+fn reserve_local_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .expect("reserve local port")
+        .local_addr()
+        .expect("read local addr")
+        .port()
+}
+
+fn create_temp_dir(prefix: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "{prefix}-{}-{}",
+        std::process::id(),
+        reserve_local_port()
+    ));
+    fs::create_dir_all(&path).expect("create temp dir");
+    path
+}
+
+fn wait_for_path(path: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if path.exists() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    panic!("expected path to be created: {}", path.display());
+}
+
+fn start_gateway(port: u16) -> GatewayProcess {
+    let child = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "serve",
+            "--token",
+            TOKEN,
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start lux test server");
+
+    GatewayProcess { child }
+}
+
+fn wait_for_health(port: u16) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if http_status(port, "/health") == Some(200) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    panic!("lux did not become healthy on port {port}");
+}
+
+fn http_status(port: u16, path: &str) -> Option<u16> {
+    request_status(port, path, &[])
+}
+
+fn websocket_status(port: u16, path: &str, headers: &[(&str, &str)]) -> u16 {
+    let mut websocket_headers = vec![
+        ("Connection", "Upgrade"),
+        ("Upgrade", "websocket"),
+        ("Sec-WebSocket-Version", "13"),
+        ("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="),
+    ];
+    websocket_headers.extend_from_slice(headers);
+
+    request_status(port, path, &websocket_headers).expect("read WebSocket response status")
+}
+
+fn request_status(port: u16, path: &str, headers: &[(&str, &str)]) -> Option<u16> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set read timeout");
+
+    let mut request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n");
+    for (name, value) in headers {
+        request.push_str(name);
+        request.push_str(": ");
+        request.push_str(value);
+        request.push_str("\r\n");
+    }
+    request.push_str("\r\n");
+
+    stream.write_all(request.as_bytes()).ok()?;
+
+    let mut response = [0_u8; 512];
+    let size = stream.read(&mut response).ok()?;
+    let response = std::str::from_utf8(&response[..size]).ok()?;
+    response
+        .lines()
+        .next()?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
+}
