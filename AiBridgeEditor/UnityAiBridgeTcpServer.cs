@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -20,12 +22,15 @@ namespace Linalab.UnityAiBridge.Editor
 
         private static readonly object SharedLifecycleLock = new object();
         private static readonly int MainThreadId = Thread.CurrentThread.ManagedThreadId;
+        private static readonly ConcurrentQueue<Action> MainThreadActionQueue = new ConcurrentQueue<Action>();
         private static readonly ConcurrentQueue<MainThreadDispatch> MainThreadDispatchQueue = new ConcurrentQueue<MainThreadDispatch>();
         private const string DynamicCodeCommand = "execute_lux_dynamic_code";
         private static int dynamicCodeInFlight;
         private static UnityAiBridgeTcpServer sharedInstance;
 
         private readonly object lifecycleLock = new object();
+        private readonly object clientsLock = new object();
+        private readonly List<ClientConnection> connectedClients = new List<ClientConnection>();
         private TcpListener listener;
         private CancellationTokenSource cancellationTokenSource;
         private Task acceptTask;
@@ -113,6 +118,17 @@ namespace Linalab.UnityAiBridge.Editor
             }
         }
 
+        public static void BroadcastEvent(string eventType, object payload)
+        {
+            UnityAiBridgeTcpServer server;
+            lock (SharedLifecycleLock)
+            {
+                server = sharedInstance;
+            }
+
+            server?.BroadcastEventInternal(eventType, payload);
+        }
+
         public void Start()
         {
             lock (lifecycleLock)
@@ -185,6 +201,7 @@ namespace Linalab.UnityAiBridge.Editor
             }
 
             DeleteDiscoveryFile();
+            ClearConnectedClients();
         }
 
         public void Dispose()
@@ -279,6 +296,7 @@ namespace Linalab.UnityAiBridge.Editor
                 using (var writer = new StreamWriter(stream, new UTF8Encoding(false), 1024, true))
                 {
                     writer.NewLine = "\n";
+                    var connection = new ClientConnection(client, writer);
 
                     string line;
                     while (!cancellationToken.IsCancellationRequested && (line = reader.ReadLine()) != null)
@@ -288,10 +306,11 @@ namespace Linalab.UnityAiBridge.Editor
                             continue;
                         }
 
-                        var response = HandleRequestLine(line);
-                        writer.WriteLine(ToJsonLine(response));
-                        writer.Flush();
+                        var response = HandleRequestLine(line, connection);
+                        connection.WriteLine(ToJsonLine(response));
                     }
+
+                    RemoveClient(connection);
                 }
             }
             catch (ObjectDisposedException exception)
@@ -312,7 +331,7 @@ namespace Linalab.UnityAiBridge.Editor
             }
         }
 
-        private UnityAiBridgeProtocolResponse HandleRequestLine(string line)
+        private UnityAiBridgeProtocolResponse HandleRequestLine(string line, ClientConnection connection)
         {
             var request = ParseRequestLine(line);
             if (!UnityAiBridgeProtocol.IsRegistryReady)
@@ -321,6 +340,21 @@ namespace Linalab.UnityAiBridge.Editor
             }
 
             var releaseDynamicCodeFlight = false;
+            if (IsAuthorized(request))
+            {
+                AddClient(connection);
+            }
+
+            if (string.Equals(request?.command, UnityAiBridgeProtocol.CommandSubscribeEvents, StringComparison.Ordinal))
+            {
+                return HandleSubscribeEvents(request, connection);
+            }
+
+            if (string.Equals(request?.command, UnityAiBridgeProtocol.CommandTriggerCompile, StringComparison.Ordinal))
+            {
+                return HandleTriggerCompile(request);
+            }
+
             if (IsDynamicCodeCommand(request))
             {
                 if (Interlocked.CompareExchange(ref dynamicCodeInFlight, 1, 0) != 0)
@@ -378,6 +412,61 @@ namespace Linalab.UnityAiBridge.Editor
         private static bool IsDynamicCodeCommand(UnityAiBridgeProtocolRequest request)
         {
             return string.Equals(request?.command, DynamicCodeCommand, StringComparison.Ordinal);
+        }
+
+        private bool IsAuthorized(UnityAiBridgeProtocolRequest request)
+        {
+            return request != null
+                && !string.IsNullOrEmpty(token)
+                && !string.IsNullOrEmpty(request.token)
+                && string.Equals(request.token, token, StringComparison.Ordinal);
+        }
+
+        private UnityAiBridgeProtocolResponse HandleSubscribeEvents(UnityAiBridgeProtocolRequest request, ClientConnection connection)
+        {
+            if (!IsAuthorized(request))
+            {
+                return UnityAiBridgeProtocol.CreateErrorResponse(
+                    request?.requestId,
+                    UnityAiBridgeProtocol.ErrorCodeUnauthorized,
+                    "Invalid token.");
+            }
+
+            var eventTypes = SplitEventTypes(request.@params?.eventTypes);
+            connection.SetSubscriptions(eventTypes);
+            return UnityAiBridgeProtocol.CreateOkResponse(request.requestId, null);
+        }
+
+        private UnityAiBridgeProtocolResponse HandleTriggerCompile(UnityAiBridgeProtocolRequest request)
+        {
+            if (!IsAuthorized(request))
+            {
+                return UnityAiBridgeProtocol.CreateErrorResponse(
+                    request?.requestId,
+                    UnityAiBridgeProtocol.ErrorCodeUnauthorized,
+                    "Invalid token.");
+            }
+
+            MainThreadActionQueue.Enqueue(() =>
+            {
+                Linalab.Lux.Editor.LuxCompileWatcher.TriggerCompileRefresh("manual trigger_compile command");
+            });
+            return UnityAiBridgeProtocol.CreateOkResponse(request.requestId, null);
+        }
+
+        private static string[] SplitEventTypes(string eventTypes)
+        {
+            if (string.IsNullOrWhiteSpace(eventTypes))
+            {
+                return new string[0];
+            }
+
+            return eventTypes
+                .Split(new[] { ',', ';', ' ', '\n', '\r', '\t' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(eventType => eventType.Trim())
+                .Where(eventType => eventType.Length > 0)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
         }
 
         private UnityAiBridgeProtocolResponse HandleRequestOnMainThread(UnityAiBridgeProtocolRequest request)
@@ -439,6 +528,18 @@ namespace Linalab.UnityAiBridge.Editor
                 server = sharedInstance;
             }
 
+            while (MainThreadActionQueue.TryDequeue(out var action))
+            {
+                try
+                {
+                    action();
+                }
+                catch (Exception exception)
+                {
+                    Trace.TraceWarning($"Unity AI Bridge main-thread action failed: {exception.Message}");
+                }
+            }
+
             while (MainThreadDispatchQueue.TryDequeue(out var dispatch))
             {
                 if (server == null || !server.IsRunning)
@@ -455,6 +556,188 @@ namespace Linalab.UnityAiBridge.Editor
             }
         }
 
+        private void AddClient(ClientConnection connection)
+        {
+            if (connection == null)
+            {
+                return;
+            }
+
+            lock (clientsLock)
+            {
+                if (!connectedClients.Contains(connection))
+                {
+                    connectedClients.Add(connection);
+                }
+
+                connection.Authenticated = true;
+            }
+        }
+
+        private void RemoveClient(ClientConnection connection)
+        {
+            if (connection == null)
+            {
+                return;
+            }
+
+            lock (clientsLock)
+            {
+                connectedClients.Remove(connection);
+            }
+        }
+
+        private void ClearConnectedClients()
+        {
+            lock (clientsLock)
+            {
+                connectedClients.Clear();
+            }
+        }
+
+        private void BroadcastEventInternal(string eventType, object payload)
+        {
+            if (string.IsNullOrWhiteSpace(eventType))
+            {
+                return;
+            }
+
+            var eventLine = ToEventJsonLine(eventType, payload);
+            ClientConnection[] clients;
+            lock (clientsLock)
+            {
+                clients = connectedClients.ToArray();
+            }
+
+            foreach (var client in clients)
+            {
+                if (!client.Authenticated || !client.IsSubscribedTo(eventType))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    client.WriteLine(eventLine);
+                }
+                catch (IOException exception)
+                {
+                    Trace.TraceWarning($"Unity AI Bridge TCP event broadcast failed: {exception.Message}");
+                    RemoveClient(client);
+                }
+                catch (ObjectDisposedException exception)
+                {
+                    Trace.TraceInformation($"Unity AI Bridge TCP event broadcast skipped disposed client: {exception.Message}");
+                    RemoveClient(client);
+                }
+                catch (InvalidOperationException exception)
+                {
+                    Trace.TraceWarning($"Unity AI Bridge TCP event broadcast failed: {exception.Message}");
+                    RemoveClient(client);
+                }
+            }
+        }
+
+        private static string ToEventJsonLine(string eventType, object payload)
+        {
+            var builder = new StringBuilder(256);
+            builder.Append('{');
+            AppendJsonProperty(builder, "type", "event", false);
+            AppendJsonProperty(builder, "event", eventType, true);
+            AppendJsonProperty(builder, "timestamp", DateTime.UtcNow.ToString("O"), true);
+            builder.Append(",\"payload\":");
+            AppendJsonValue(builder, payload);
+            builder.Append('}');
+            return builder.ToString();
+        }
+
+        private static void AppendJsonValue(StringBuilder builder, object value)
+        {
+            if (value == null)
+            {
+                builder.Append("null");
+                return;
+            }
+
+            if (value is string stringValue)
+            {
+                AppendJsonString(builder, stringValue);
+                return;
+            }
+
+            if (value is bool boolValue)
+            {
+                builder.Append(boolValue ? "true" : "false");
+                return;
+            }
+
+            if (value is int || value is long || value is short || value is byte || value is uint || value is ulong || value is ushort || value is sbyte)
+            {
+                builder.Append(Convert.ToString(value, CultureInfo.InvariantCulture));
+                return;
+            }
+
+            if (value is float || value is double || value is decimal)
+            {
+                builder.Append(Convert.ToString(value, CultureInfo.InvariantCulture));
+                return;
+            }
+
+            if (value is System.Collections.IEnumerable enumerable)
+            {
+                builder.Append('[');
+                var index = 0;
+                foreach (var item in enumerable)
+                {
+                    if (index++ > 0)
+                    {
+                        builder.Append(',');
+                    }
+
+                    AppendJsonValue(builder, item);
+                }
+
+                builder.Append(']');
+                return;
+            }
+
+            builder.Append('{');
+            var wrote = false;
+            var type = value.GetType();
+            foreach (var field in type.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public))
+            {
+                if (wrote)
+                {
+                    builder.Append(',');
+                }
+
+                AppendJsonString(builder, field.Name);
+                builder.Append(':');
+                AppendJsonValue(builder, field.GetValue(value));
+                wrote = true;
+            }
+
+            foreach (var property in type.GetProperties(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public))
+            {
+                if (!property.CanRead || property.GetIndexParameters().Length > 0)
+                {
+                    continue;
+                }
+
+                if (wrote)
+                {
+                    builder.Append(',');
+                }
+
+                AppendJsonString(builder, property.Name);
+                builder.Append(':');
+                AppendJsonValue(builder, property.GetValue(value, null));
+                wrote = true;
+            }
+
+            builder.Append('}');
+        }
+
         private sealed class MainThreadDispatch
         {
             public MainThreadDispatch(UnityAiBridgeProtocolRequest request)
@@ -466,6 +749,58 @@ namespace Linalab.UnityAiBridge.Editor
             public ManualResetEventSlim Completed { get; } = new ManualResetEventSlim(false);
             public UnityAiBridgeProtocolResponse Response { get; set; }
             public Exception Exception { get; set; }
+        }
+
+        private sealed class ClientConnection
+        {
+            private readonly object writeLock = new object();
+            private readonly StreamWriter writer;
+            private readonly HashSet<string> subscriptions = new HashSet<string>(StringComparer.Ordinal);
+            private bool hasExplicitSubscriptions;
+
+            public ClientConnection(TcpClient client, StreamWriter writer)
+            {
+                Client = client;
+                this.writer = writer;
+            }
+
+            public TcpClient Client { get; }
+            public bool Authenticated { get; set; }
+
+            public void SetSubscriptions(string[] eventTypes)
+            {
+                lock (subscriptions)
+                {
+                    subscriptions.Clear();
+                    hasExplicitSubscriptions = eventTypes != null && eventTypes.Length > 0;
+                    if (eventTypes == null)
+                    {
+                        return;
+                    }
+
+                    foreach (var eventType in eventTypes)
+                    {
+                        subscriptions.Add(eventType);
+                    }
+                }
+            }
+
+            public bool IsSubscribedTo(string eventType)
+            {
+                lock (subscriptions)
+                {
+                    return !hasExplicitSubscriptions || subscriptions.Contains(eventType);
+                }
+            }
+
+            public void WriteLine(string line)
+            {
+                lock (writeLock)
+                {
+                    writer.WriteLine(line);
+                    writer.Flush();
+                }
+            }
         }
 
         private static UnityAiBridgeProtocolRequest ParseRequestLine(string line)
@@ -521,7 +856,8 @@ namespace Linalab.UnityAiBridge.Editor
                     inputScrollY = ExtractFloat(line, "inputScrollY"),
                     inputSteps = ExtractInt(line, "inputSteps"),
                     inputFilePath = ExtractString(line, "inputFilePath"),
-                    dynamicCode = ExtractString(line, "dynamicCode")
+                    dynamicCode = ExtractString(line, "dynamicCode"),
+                    eventTypes = ExtractString(line, "eventTypes")
                 }
             };
 

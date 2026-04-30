@@ -16,6 +16,8 @@ namespace Linalab.UnityAiBridge.Editor
         public const string CommandPing = "ping";
         public const string CommandGetProtocolInfo = "get_protocol_info";
         public const string CommandGetSelectedFileContext = "get_selected_file_context";
+        public const string CommandSubscribeEvents = "subscribe_events";
+        public const string CommandTriggerCompile = "trigger_compile";
 
         public const string ErrorCodeUnknownCommand = "unknown_command";
         public const string ErrorCodeUnauthorized = "unauthorized";
@@ -58,7 +60,9 @@ namespace Linalab.UnityAiBridge.Editor
         {
             CommandPing,
             CommandGetProtocolInfo,
-            CommandGetSelectedFileContext
+            CommandGetSelectedFileContext,
+            CommandSubscribeEvents,
+            CommandTriggerCompile
         };
 
         public static void RegisterCommand(string command, Func<UnityAiBridgeProtocolRequest, UnityAiBridgeProtocolResponse> handler)
@@ -200,6 +204,13 @@ namespace Linalab.UnityAiBridge.Editor
                     }
 
                     return selectedFileContextHandler(request) ?? CreateSelectedFileContextResponse(request.requestId);
+
+                case CommandSubscribeEvents:
+                case CommandTriggerCompile:
+                    return CreateErrorResponse(
+                        request.requestId,
+                        ErrorCodeInvalidParams,
+                        $"Command '{request.command}' requires TCP connection state and was not dispatched by the server.");
 
                 default:
                     if (!IsRegistryReady && IsLuxRegistryCommand(request.command))
@@ -420,6 +431,7 @@ namespace Linalab.UnityAiBridge.Editor
         public int inputSteps;
         public string inputFilePath;
         public string dynamicCode;
+        public string eventTypes;
     }
 
     [Serializable]
