@@ -1,0 +1,386 @@
+# ============================================================================
+# Seed: Lux Internal Skill Manager — Phase 1
+# Session: interview_44b1e861c28d4a9a
+# Ambiguity: 0.05
+# Generated: 2026-04-30
+# ============================================================================
+# This seed is IMMUTABLE once generated. It is the constitution for
+# autonomous execution of Phase 1 of the Lux Skill Manager.
+# ============================================================================
+
+goal: |
+  Implement Phase 1 of the Lux Internal Skill Manager for the Unity
+  automation CLI. Add a manifest.json schema for skill packages, create
+  the Skills/ directory with an embedded core skill (lux-unity migrated
+  from .opencode/skills/lux-unity/), and implement `lux skill list` and
+  `lux skill info <name>` Rust CLI subcommands with multi-directory
+  skill discovery (core + project + global).
+
+constraints:
+  - Phase 1 scope only — no install, remove, or update commands
+  - SKILL.md format preserved unchanged (YAML frontmatter + markdown body)
+  - manifest.json added alongside SKILL.md, never replacing it
+  - No hotload or file watchers — skills loaded on-demand only
+  - Core skills embedded at Packages/com.linalab.lux/Skills/
+  - Project skills scanned at .lux/skills/ (relative to project root)
+  - Global skills scanned at ~/.lux/skills/
+  - Existing cargo tests (32 tests) must continue to pass unchanged
+  - Skills are a pure metadata/documentation layer — CLI command dispatch is unaffected
+  - Cross-platform support for Windows, macOS, and Linux
+  - No version resolution or comparison logic in Phase 1 — schema definition only
+  - No dependency resolution in Phase 1 — dependencies field is empty object only
+  - manifest.json parse failure must warn on stderr and skip the skill, exit code 0
+  - Missing manifest.json in a skill directory must warn on stderr and skip, exit code 0
+  - clap_complete shell completions must cover new skill subcommands
+  - Follow existing clap derive patterns in main.rs (Command enum variant, nested Subcommand enum, Parser args structs, anyhow::Result error handling)
+  - Only one core skill in Phase 1 — lux-unity
+  - OpenCode-only client support for now
+
+acceptance_criteria:
+  - id: AC1
+    description: >
+      `lux skill list` outputs a table with columns NAME, VERSION, TYPE,
+      DESCRIPTION. The table includes a lux-unity row with version=1.0.0,
+      type=core, and a non-empty description. Exit code 0.
+    verification: |
+      cargo run -- skill list
+      # Assert: stdout contains "lux-unity", "1.0.0", "core"
+      # Assert: exit code == 0
+
+  - id: AC2
+    description: >
+      `lux skill list --json` outputs a parseable JSON array containing a
+      lux-unity entry with all manifest fields. Exit code 0.
+    verification: |
+      cargo run -- skill list --json | python3 -c "import sys,json; d=json.load(sys.stdin); assert any(s['name']=='com.linalab.lux.unity' for s in d)"
+      # Assert: valid JSON array
+      # Assert: exit code == 0
+
+  - id: AC3
+    description: >
+      `lux skill info lux-unity` outputs human-readable key:value format
+      showing all manifest fields, a references/ file list (9 files),
+      installation path, and SKILL.md preview (first 10 lines). Exit code 0.
+    verification: |
+      cargo run -- skill info lux-unity
+      # Assert: stdout contains "Name:", "Version:", "Description:", "Location:", "References:"
+      # Assert: 9 reference file names listed
+      # Assert: exit code == 0
+
+  - id: AC4
+    description: >
+      `lux skill info lux-unity --json` outputs the full manifest as a
+      JSON object plus a references array. Exit code 0.
+    verification: |
+      cargo run -- skill info lux-unity --json | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['name']=='com.linalab.lux.unity'"
+      # Assert: valid JSON object with references array
+      # Assert: exit code == 0
+
+  - id: AC5
+    description: >
+      `lux skill info nonexistent` returns exit code 1 with error message
+      containing "not found".
+    verification: |
+      cargo run -- skill info nonexistent 2>&1; echo "EXIT:$?"
+      # Assert: stderr contains "not found"
+      # Assert: exit code == 1
+
+  - id: AC6
+    description: >
+      `lux skill list` with an empty Skills/ directory outputs an empty
+      table with "No skills found" message. Exit code 0.
+    verification: |
+      # Temporarily rename Skills/lux-unity, run lux skill list, verify message, restore
+      # Assert: stdout contains "No skills found"
+      # Assert: exit code == 0
+
+  - id: AC7
+    description: >
+      A malformed manifest.json in a skill directory produces a warning
+      on stderr and the skill is skipped from listing. Exit code 0.
+    verification: |
+      # Create temp skill dir with invalid JSON manifest, run lux skill list
+      # Assert: stderr contains warning about parse failure
+      # Assert: the malformed skill does NOT appear in the table
+      # Assert: exit code == 0
+
+  - id: AC8
+    description: >
+      All existing cargo tests pass — `cargo test` in RustGateway~/
+      returns exit code 0 with 32+ tests passing.
+    verification: |
+      cd Packages/com.linalab.lux/RustGateway~ && cargo test
+      # Assert: "test result: ok" with 32+ tests
+      # Assert: exit code == 0
+
+  - id: AC9
+    description: >
+      `lux compile` and all existing CLI commands function unchanged.
+      The skill system does not interfere with command dispatch.
+    verification: |
+      cargo run -- compile --help
+      cargo run -- unity status --help
+      # Assert: help output unchanged from before
+      # Assert: exit code == 0
+
+  - id: AC10
+    description: >
+      Packages/com.linalab.lux/Skills/lux-unity/ directory exists
+      containing manifest.json, SKILL.md, and references/ subdirectory
+      with 9 markdown files migrated from .opencode/skills/lux-unity/.
+    verification: |
+      ls Packages/com.linalab.lux/Skills/lux-unity/
+      ls Packages/com.linalab.lux/Skills/lux-unity/references/
+      # Assert: manifest.json exists
+      # Assert: SKILL.md exists
+      # Assert: 9 .md files in references/
+
+  - id: AC11
+    description: >
+      The manifest.json in lux-unity validates against the defined schema:
+      required fields (name, version, description) present and correctly
+      typed; optional fields (displayName, luxVersion, author, keywords,
+      type, source, dependencies) present where applicable.
+    verification: |
+      python3 -c "
+      import json
+      m = json.load(open('Packages/com.linalab.lux/Skills/lux-unity/manifest.json'))
+      assert isinstance(m['name'], str)
+      assert isinstance(m['version'], str)
+      assert isinstance(m['description'], str)
+      assert m['type'] == 'core'
+      print('Schema valid')
+      "
+
+  - id: AC12
+    description: >
+      Skill discovery scans three directories in priority order:
+      core (Packages/com.linalab.lux/Skills/), project (.lux/skills/),
+      global (~/.lux/skills/). Non-existent directories are silently
+      skipped.
+    verification: |
+      # Place a test skill in .lux/skills/ with type=project
+      # Run lux skill list, verify both core and project skills appear
+      # Verify correct TYPE column values
+
+  - id: AC13
+    description: >
+      New `lux skill` subcommands appear in shell completion output.
+    verification: |
+      cargo run -- completion --shell zsh 2>/dev/null | grep -q "skill"
+      # Assert: "skill" appears in completion output
+
+  - id: AC14
+    description: >
+      `lux skill --help` shows list and info subcommands with descriptions.
+    verification: |
+      cargo run -- skill --help
+      # Assert: stdout contains "list" and "info"
+      # Assert: exit code == 0
+
+ontology:
+  name: LuxSkillManifest
+  description: >
+    Schema for Lux skill package metadata, combining UPM manifest
+    patterns (name, version, dependencies, author) with skills.sh
+    SKILL.md format for AI agent documentation bundles. Skills are
+    pure metadata/documentation — they do not affect CLI command dispatch.
+  fields:
+    - name: name
+      type: string
+      description: Reverse-domain skill identifier (e.g. "com.linalab.lux.unity")
+      required: true
+    - name: version
+      type: string
+      description: Semver version string (e.g. "1.0.0")
+      required: true
+    - name: description
+      type: string
+      description: Short human-readable description of the skill
+      required: true
+    - name: displayName
+      type: string
+      description: Human-friendly display name (e.g. "Lux Unity")
+      required: false
+    - name: luxVersion
+      type: string
+      description: Semver range for minimum Lux CLI version (e.g. ">=0.1.0") — definition only, no enforcement in Phase 1
+      required: false
+    - name: author
+      type: object
+      description: "Author info: { name: string, email?: string, url?: string }"
+      required: false
+    - name: keywords
+      type: array
+      description: String array of searchable tags
+      required: false
+    - name: type
+      type: string
+      description: "Skill scope enum: core | project | global"
+      required: false
+    - name: source
+      type: string
+      description: Installation source URL — null for core skills, populated for installed skills
+      required: false
+    - name: dependencies
+      type: object
+      description: Dependency map — empty object in Phase 1, resolved in Phase 2
+      required: false
+
+evaluation_principles:
+  - name: backward_compatibility
+    description: >
+      Existing 32 cargo tests and all CLI commands must remain
+      completely unaffected — zero regressions allowed.
+    weight: 1.0
+
+  - name: schema_correctness
+    description: >
+      manifest.json schema matches the interview-defined specification
+      exactly, with correct required/optional field distinction and
+      proper JSON types.
+    weight: 0.9
+
+  - name: pattern_consistency
+    description: >
+      New Rust code follows existing clap derive patterns (Command enum
+      variant, nested Subcommand enum, Parser args structs) and error
+      handling conventions (anyhow::Result, bail! macro).
+    weight: 0.9
+
+  - name: cross_platform
+    description: >
+      File path handling uses std::path abstractions. Home directory
+      resolution works correctly on Windows, macOS, and Linux.
+    weight: 0.8
+
+  - name: error_resilience
+    description: >
+      Graceful degradation on malformed manifests and missing
+      directories — warn on stderr and skip, never crash or return
+      non-zero exit code for recoverable errors.
+    weight: 0.8
+
+  - name: output_fidelity
+    description: >
+      CLI output matches interview-specified formats exactly: table
+      for list, key:value for info, JSON array/object for --json flag.
+    weight: 0.7
+
+  - name: migration_completeness
+    description: >
+      All 10 files from .opencode/skills/lux-unity/ (1 SKILL.md +
+      9 reference .md files) present in new location with correct
+      directory structure preserved.
+    weight: 0.7
+
+  - name: minimal_diff
+    description: >
+      Changes scoped to new files and minimal additions to main.rs.
+      No unnecessary refactoring of existing code.
+    weight: 0.6
+
+exit_conditions:
+  - name: all_ac_pass
+    description: All 14 acceptance criteria verified as passing
+    criteria: Each AC1 through AC14 individually confirmed with expected exit codes and output
+
+  - name: cargo_test_green
+    description: Full existing test suite passes
+    criteria: "cargo test in RustGateway~/ returns exit code 0 with 32+ tests passing"
+
+  - name: compilation_clean
+    description: Rust code compiles without errors
+    criteria: "cargo build in RustGateway~/ returns exit code 0"
+
+brownfield:
+  project_type: brownfield
+
+  context_references:
+    - path: Packages/com.linalab.lux/RustGateway~/src/main.rs
+      role: primary
+      summary: >
+        Rust CLI entry point (~2193 lines). clap 4.5 derive pattern with
+        top-level Command enum (Serve, Unity, Compile, RunTests, Schema,
+        Completion) and nested UnityCommand enum (~20 variants). Uses
+        anyhow::Result for error handling, serde_json for JSON output,
+        clap_complete for shell completions. New Skill(SkillArgs) variant
+        should be added to the Command enum following this pattern.
+
+    - path: Packages/com.linalab.lux/RustGateway~/tests/gateway_cli_smoke.rs
+      role: primary
+      summary: >
+        Integration test file (~1987 lines). Uses assert_command_help_contains
+        pattern for CLI smoke tests. New skill subcommand tests should follow
+        this established pattern.
+
+    - path: Packages/com.linalab.lux/RustGateway~/Cargo.toml
+      role: primary
+      summary: >
+        Rust dependencies. Key: clap 4.5 (derive+env), clap_complete 4.5,
+        anyhow 1.0, serde 1.0 (derive), serde_json 1.0. No new dependencies
+        should be needed for Phase 1.
+
+    - path: .opencode/skills/lux-unity/SKILL.md
+      role: primary
+      summary: >
+        Source skill file to migrate. YAML frontmatter with name and
+        description fields, followed by markdown body with usage guidelines
+        and command reference links. 35 lines total.
+
+    - path: .opencode/skills/lux-unity/references/
+      role: primary
+      summary: >
+        9 reference markdown files to migrate: backend-status.md,
+        compile-tests.md, dynamic-code.md, launch.md, logs.md,
+        object-hierarchy.md, playmode-input.md, record-replay.md,
+        screenshots.md.
+
+    - path: Packages/com.linalab.lux/RustGateway~/src/server.rs
+      role: reference
+      summary: WebSocket server module. Contains tests but no CLI patterns.
+
+    - path: Packages/com.linalab.lux/RustGateway~/src/protocol.rs
+      role: reference
+      summary: Event protocol definitions. Contains tests but no CLI patterns.
+
+    - path: Packages/com.linalab.lux/package.json
+      role: reference
+      summary: >
+        UPM package manifest for com.linalab.lux v0.1.0. Provides naming
+        and versioning patterns to mirror in skill manifest schema.
+
+  existing_patterns:
+    - "clap derive: top-level #[derive(Parser)] Cli struct → #[derive(Subcommand)] Command enum → nested args structs with #[derive(Parser)]"
+    - "Nested subcommands: Command::Unity(UnityArgs) with its own #[derive(Subcommand)] UnityCommand enum — Skill should follow identical nesting"
+    - "Error handling: functions return anyhow::Result<()>, use bail!() for early error returns, main propagates errors for automatic exit code 1"
+    - "Output formatting: serde_json::to_string_pretty() for JSON output via println!()"
+    - "Test pattern: integration tests in tests/gateway_cli_smoke.rs using assert_command_help_contains(&[args], expected_string)"
+    - "SKILL.md frontmatter: YAML between --- delimiters with name and description fields"
+    - "No explicit process::exit() calls — rely on anyhow Result propagation for exit codes"
+    - "Async main: #[tokio::main] but subcommands can be sync (returning anyhow::Result<()>)"
+
+  existing_dependencies:
+    - "clap 4.5 (derive + env features)"
+    - "clap_complete 4.5"
+    - "anyhow 1.0"
+    - "serde 1.0 (derive feature)"
+    - "serde_json 1.0"
+    - "tokio 1.44 (macros, net, rt-multi-thread, signal, sync)"
+
+# ============================================================================
+# Implementation Notes (non-normative, for executor guidance)
+# ============================================================================
+# 1. Add `Skill(SkillArgs)` to Command enum in main.rs
+# 2. Create SkillArgs with #[command(subcommand)] SkillCommand
+# 3. SkillCommand enum: List(SkillListArgs), Info(SkillInfoArgs)
+# 4. SkillListArgs: --json flag (bool)
+# 5. SkillInfoArgs: name positional arg (String), --json flag (bool)
+# 6. Skill discovery function: scan dirs, parse manifest.json, collect
+# 7. Table output: formatted println!, not an external crate
+# 8. JSON output: serde_json::to_string_pretty
+# 9. Home dir: std::env::var("HOME") on Unix, USERPROFILE on Windows
+#    or use dirs/home crate if acceptable
+# 10. Copy .opencode/skills/lux-unity/ → Skills/lux-unity/ with new manifest.json
+# 11. Add smoke tests for `skill list --help` and `skill info --help`
+# ============================================================================
