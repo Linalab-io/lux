@@ -39,12 +39,21 @@ pub struct GatewayState {
     graphs: Arc<Mutex<HashMap<String, StoredGraph>>>,
     tools: Arc<Mutex<HashMap<String, ToolSession>>>,
     tool_executions: Arc<Mutex<HashMap<String, ToolExecution>>>,
+    remote_sessions: Arc<Mutex<HashMap<String, RemoteSession>>>,
+    signaling_peers: Arc<Mutex<HashMap<String, SignalingPeer>>>,
+    signaling_queues: Arc<Mutex<HashMap<String, VecDeque<QueuedSignalingMessage>>>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct SocketQuery {
     role: Option<String>,
     client_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SignalingQuery {
+    role: Option<String>,
+    token: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -75,6 +84,69 @@ pub enum SessionStatus {
 #[serde(rename_all = "camelCase")]
 struct CreateSessionRequest {
     name: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteSession {
+    pub id: String,
+    pub unity_client_id: String,
+    pub web_client_id: Option<String>,
+    pub status: RemoteSessionStatus,
+    pub stun_urls: Vec<String>,
+    pub turn_url: Option<String>,
+    pub created_at_utc: String,
+    pub updated_at_utc: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RemoteSessionStatus {
+    WaitingForUnity,
+    WaitingForWeb,
+    Connected,
+    Disconnected,
+}
+
+#[derive(Debug)]
+pub struct SignalingPeer {
+    pub session_id: String,
+    pub role: SignalingRole,
+    pub sender: futures_util::stream::SplitSink<WebSocket, Message>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SignalingRole {
+    Unity,
+    Web,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateRemoteSessionRequest {
+    stun_urls: Option<Vec<String>>,
+    turn_url: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct QueuedSignalingMessage {
+    from: SignalingRole,
+    text: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebRtcConfig {
+    ice_servers: Vec<IceServer>,
+}
+
+#[derive(Debug, Serialize)]
+struct IceServer {
+    urls: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credential: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -219,6 +291,9 @@ impl GatewayState {
             graphs: Arc::new(Mutex::new(HashMap::new())),
             tools: Arc::new(Mutex::new(HashMap::new())),
             tool_executions: Arc::new(Mutex::new(HashMap::new())),
+            remote_sessions: Arc::new(Mutex::new(HashMap::new())),
+            signaling_peers: Arc::new(Mutex::new(HashMap::new())),
+            signaling_queues: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -248,10 +323,23 @@ pub fn router(state: GatewayState) -> Router {
         .route("/health", get(health))
         .route("/schema", get(schema))
         .route("/events", get(events_socket))
+        .route("/remote/signaling/:session_id", get(signaling_socket))
         .route("/api/sessions", get(list_sessions).post(create_session))
         .route(
             "/api/sessions/:session_id",
             get(get_session).delete(delete_session),
+        )
+        .route(
+            "/api/remote/sessions",
+            get(list_remote_sessions).post(create_remote_session),
+        )
+        .route(
+            "/api/remote/sessions/:session_id/config",
+            get(get_webrtc_config),
+        )
+        .route(
+            "/api/remote/sessions/:session_id",
+            get(get_remote_session).delete(delete_remote_session),
         )
         .route("/api/tools", get(list_available_tools))
         .route(
@@ -365,6 +453,118 @@ async fn delete_session(
     } else {
         Err(not_found())
     }
+}
+
+async fn list_remote_sessions(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<RemoteSession>>, Response> {
+    require_token(&state, &headers)?;
+    let mut sessions: Vec<_> = state
+        .remote_sessions
+        .lock()
+        .await
+        .values()
+        .cloned()
+        .collect();
+    sessions.sort_by(|left, right| left.created_at_utc.cmp(&right.created_at_utc));
+    Ok(Json(sessions))
+}
+
+async fn create_remote_session(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateRemoteSessionRequest>,
+) -> Result<(StatusCode, Json<RemoteSession>), Response> {
+    require_token(&state, &headers)?;
+
+    let now = chrono_like_now();
+    let session = RemoteSession {
+        id: Uuid::new_v4().to_string(),
+        unity_client_id: Uuid::new_v4().to_string(),
+        web_client_id: None,
+        status: RemoteSessionStatus::WaitingForUnity,
+        stun_urls: request.stun_urls.unwrap_or_else(default_stun_urls),
+        turn_url: request.turn_url,
+        created_at_utc: now.clone(),
+        updated_at_utc: now,
+    };
+
+    state
+        .remote_sessions
+        .lock()
+        .await
+        .insert(session.id.clone(), session.clone());
+
+    Ok((StatusCode::CREATED, Json(session)))
+}
+
+async fn get_remote_session(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    AxumPath(session_id): AxumPath<String>,
+) -> Result<Json<RemoteSession>, Response> {
+    require_token(&state, &headers)?;
+    state
+        .remote_sessions
+        .lock()
+        .await
+        .get(&session_id)
+        .cloned()
+        .map(Json)
+        .ok_or_else(not_found)
+}
+
+async fn delete_remote_session(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    AxumPath(session_id): AxumPath<String>,
+) -> Result<StatusCode, Response> {
+    require_token(&state, &headers)?;
+    if state
+        .remote_sessions
+        .lock()
+        .await
+        .remove(&session_id)
+        .is_none()
+    {
+        return Err(not_found());
+    }
+
+    state.signaling_queues.lock().await.remove(&session_id);
+    let mut removed = Vec::new();
+    {
+        let mut peers = state.signaling_peers.lock().await;
+        for role in [SignalingRole::Unity, SignalingRole::Web] {
+            if let Some(peer) = peers.remove(&signaling_peer_key(&session_id, &role)) {
+                debug_assert_eq!(peer.session_id, session_id);
+                debug_assert_eq!(peer.role, role);
+                removed.push(peer);
+            }
+        }
+    }
+    for mut peer in removed {
+        let _ = peer.sender.send(Message::Close(None)).await;
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_webrtc_config(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    AxumPath(session_id): AxumPath<String>,
+) -> Result<Json<WebRtcConfig>, Response> {
+    require_token(&state, &headers)?;
+    let session = state
+        .remote_sessions
+        .lock()
+        .await
+        .get(&session_id)
+        .cloned()
+        .ok_or_else(not_found)?;
+
+    Ok(Json(webrtc_config_for(&session)))
 }
 
 async fn list_available_tools() -> Json<serde_json::Value> {
@@ -563,12 +763,7 @@ async fn ensure_tool_session(
     session_id
 }
 
-async fn record_tool_command(
-    state: &GatewayState,
-    session_id: &str,
-    command: &str,
-    now: &str,
-) {
+async fn record_tool_command(state: &GatewayState, session_id: &str, command: &str, now: &str) {
     let mut sessions = state.tools.lock().await;
     if let Some(session) = sessions.get_mut(session_id) {
         session.updated_at_utc = now.to_string();
@@ -879,6 +1074,193 @@ async fn events_socket(
     ws.on_upgrade(move |socket| handle_socket(state, socket, role, client_id))
 }
 
+async fn signaling_socket(
+    State(state): State<GatewayState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(query): Query<SignalingQuery>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let header_token = headers
+        .get("x-lux-token")
+        .and_then(|value| value.to_str().ok());
+    let supplied = header_token.or(query.token.as_deref());
+    if !state.accepts_token(supplied) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            "invalid or missing Lux gateway token",
+        )
+            .into_response();
+    }
+
+    if !accepts_origin(&headers) {
+        return (
+            StatusCode::FORBIDDEN,
+            "forbidden Lux gateway WebSocket origin",
+        )
+            .into_response();
+    }
+
+    if !state.remote_sessions.lock().await.contains_key(&session_id) {
+        return not_found();
+    }
+
+    let Some(role) = parse_signaling_role(query.role.as_deref()) else {
+        return (StatusCode::BAD_REQUEST, "role must be unity or web").into_response();
+    };
+
+    ws.on_upgrade(move |socket| handle_signaling_socket(state, session_id, role, socket))
+}
+
+async fn handle_signaling_socket(
+    state: GatewayState,
+    session_id: String,
+    role: SignalingRole,
+    socket: WebSocket,
+) {
+    let (sender, mut receiver) = socket.split();
+    let key = signaling_peer_key(&session_id, &role);
+
+    state.signaling_peers.lock().await.insert(
+        key.clone(),
+        SignalingPeer {
+            session_id: session_id.clone(),
+            role: role.clone(),
+            sender,
+        },
+    );
+    update_remote_session_for_peer(&state, &session_id, &role, true).await;
+    flush_signaling_queue(&state, &session_id).await;
+
+    while let Some(message) = receiver.next().await {
+        match message {
+            Ok(Message::Text(text)) => {
+                if text.len() > 64 * 1024 {
+                    tracing::warn!(%session_id, "Lux gateway ignored oversized signaling message");
+                    continue;
+                }
+                if !is_valid_signaling_message(&text) {
+                    tracing::warn!(%session_id, "Lux gateway ignored malformed signaling message");
+                    continue;
+                }
+                relay_or_queue_signaling(&state, &session_id, &role, text).await;
+            }
+            Ok(Message::Close(_)) | Err(_) => break,
+            Ok(_) => {}
+        }
+    }
+
+    remove_signaling_peer(&state, &session_id, &role, &key).await;
+}
+
+async fn relay_or_queue_signaling(
+    state: &GatewayState,
+    session_id: &str,
+    from: &SignalingRole,
+    text: String,
+) {
+    let target = opposite_signaling_role(from);
+    let target_key = signaling_peer_key(session_id, &target);
+
+    let delivered = {
+        let mut peers = state.signaling_peers.lock().await;
+        if let Some(peer) = peers.get_mut(&target_key) {
+            debug_assert_eq!(peer.session_id, session_id);
+            debug_assert_eq!(peer.role, target);
+            peer.sender.send(Message::Text(text.clone())).await.is_ok()
+        } else {
+            false
+        }
+    };
+
+    if !delivered {
+        state
+            .signaling_queues
+            .lock()
+            .await
+            .entry(session_id.to_string())
+            .or_default()
+            .push_back(QueuedSignalingMessage {
+                from: from.clone(),
+                text,
+            });
+    }
+}
+
+async fn flush_signaling_queue(state: &GatewayState, session_id: &str) {
+    let queued = state
+        .signaling_queues
+        .lock()
+        .await
+        .remove(session_id)
+        .unwrap_or_default();
+
+    for message in queued {
+        relay_or_queue_signaling(state, session_id, &message.from, message.text).await;
+    }
+}
+
+async fn update_remote_session_for_peer(
+    state: &GatewayState,
+    session_id: &str,
+    role: &SignalingRole,
+    connected: bool,
+) {
+    let mut sessions = state.remote_sessions.lock().await;
+    let Some(session) = sessions.get_mut(session_id) else {
+        return;
+    };
+
+    if connected {
+        match role {
+            SignalingRole::Unity => session.status = RemoteSessionStatus::WaitingForWeb,
+            SignalingRole::Web => session.web_client_id = Some(Uuid::new_v4().to_string()),
+        }
+    } else {
+        if matches!(role, SignalingRole::Web) {
+            session.web_client_id = None;
+        }
+        session.status = RemoteSessionStatus::Disconnected;
+    }
+
+    let unity_connected = state
+        .signaling_peers
+        .try_lock()
+        .map(|peers| peers.contains_key(&signaling_peer_key(session_id, &SignalingRole::Unity)))
+        .unwrap_or(false);
+    let web_connected = state
+        .signaling_peers
+        .try_lock()
+        .map(|peers| peers.contains_key(&signaling_peer_key(session_id, &SignalingRole::Web)))
+        .unwrap_or(false);
+    if unity_connected && web_connected {
+        session.status = RemoteSessionStatus::Connected;
+    }
+    session.updated_at_utc = chrono_like_now();
+}
+
+async fn remove_signaling_peer(
+    state: &GatewayState,
+    session_id: &str,
+    role: &SignalingRole,
+    key: &str,
+) {
+    state.signaling_peers.lock().await.remove(key);
+    update_remote_session_for_peer(state, session_id, role, false).await;
+
+    let notification = serde_json::json!({
+        "type": "peer-disconnected",
+        "payload": { "role": signaling_role_name(role) }
+    })
+    .to_string();
+    let target = opposite_signaling_role(role);
+    let target_key = signaling_peer_key(session_id, &target);
+    let mut peers = state.signaling_peers.lock().await;
+    if let Some(peer) = peers.get_mut(&target_key) {
+        let _ = peer.sender.send(Message::Text(notification)).await;
+    }
+}
+
 async fn handle_socket(state: GatewayState, socket: WebSocket, role: String, client_id: String) {
     let (mut sender, mut receiver) = socket.split();
     let mut events = state.events.subscribe();
@@ -942,6 +1324,65 @@ async fn handle_socket(state: GatewayState, socket: WebSocket, role: String, cli
             }
         }
     }
+}
+
+fn default_stun_urls() -> Vec<String> {
+    vec!["stun:stun.l.google.com:19302".to_string()]
+}
+
+fn webrtc_config_for(session: &RemoteSession) -> WebRtcConfig {
+    let mut ice_servers = vec![IceServer {
+        urls: session.stun_urls.clone(),
+        username: None,
+        credential: None,
+    }];
+
+    if let Some(turn_url) = &session.turn_url {
+        ice_servers.push(IceServer {
+            urls: vec![turn_url.clone()],
+            username: std::env::var("LUX_TURN_USERNAME").ok(),
+            credential: std::env::var("LUX_TURN_CREDENTIAL").ok(),
+        });
+    }
+
+    WebRtcConfig { ice_servers }
+}
+
+fn parse_signaling_role(role: Option<&str>) -> Option<SignalingRole> {
+    match role {
+        Some("unity") => Some(SignalingRole::Unity),
+        Some("web") => Some(SignalingRole::Web),
+        _ => None,
+    }
+}
+
+fn signaling_peer_key(session_id: &str, role: &SignalingRole) -> String {
+    format!("{session_id}:{}", signaling_role_name(role))
+}
+
+fn signaling_role_name(role: &SignalingRole) -> &'static str {
+    match role {
+        SignalingRole::Unity => "unity",
+        SignalingRole::Web => "web",
+    }
+}
+
+fn opposite_signaling_role(role: &SignalingRole) -> SignalingRole {
+    match role {
+        SignalingRole::Unity => SignalingRole::Web,
+        SignalingRole::Web => SignalingRole::Unity,
+    }
+}
+
+fn is_valid_signaling_message(text: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+    let Some(message_type) = value.get("type").and_then(|value| value.as_str()) else {
+        return false;
+    };
+    matches!(message_type, "sdp-offer" | "sdp-answer" | "ice-candidate")
+        && value.get("payload").is_some()
 }
 
 fn accepts_origin(headers: &HeaderMap) -> bool {
@@ -1066,6 +1507,113 @@ mod tests {
     async fn response_json(response: Response) -> serde_json::Value {
         let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         serde_json::from_slice(&body).unwrap()
+    }
+
+    async fn delete_request(app: Router, uri: &str) -> Response {
+        app.oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri(uri)
+                .header("x-lux-token", "secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn test_remote_session(id: &str) -> RemoteSession {
+        RemoteSession {
+            id: id.to_string(),
+            unity_client_id: "unity-client".to_string(),
+            web_client_id: None,
+            status: RemoteSessionStatus::WaitingForUnity,
+            stun_urls: default_stun_urls(),
+            turn_url: None,
+            created_at_utc: "unix:1".to_string(),
+            updated_at_utc: "unix:1".to_string(),
+        }
+    }
+
+    async fn start_test_server(
+        state: GatewayState,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, router(state)).await.unwrap();
+        });
+        (address, handle)
+    }
+
+    fn websocket_connect(address: std::net::SocketAddr, path: &str) -> std::net::TcpStream {
+        use std::io::{Read, Write};
+
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let request = format!(
+            "GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).unwrap();
+
+        let mut response = Vec::new();
+        let mut buffer = [0; 1];
+        while !response.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut buffer).unwrap();
+            response.push(buffer[0]);
+        }
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 101"), "{response}");
+        stream
+    }
+
+    fn websocket_send_text(stream: &mut std::net::TcpStream, text: &str) {
+        use std::io::Write;
+
+        let bytes = text.as_bytes();
+        assert!(bytes.len() < 126);
+        let mask = [1_u8, 2, 3, 4];
+        let mut frame = vec![0x81, 0x80 | bytes.len() as u8];
+        frame.extend_from_slice(&mask);
+        frame.extend(
+            bytes
+                .iter()
+                .enumerate()
+                .map(|(index, byte)| byte ^ mask[index % 4]),
+        );
+        stream.write_all(&frame).unwrap();
+    }
+
+    fn websocket_read_text(stream: &mut std::net::TcpStream) -> String {
+        use std::io::Read;
+
+        let mut header = [0_u8; 2];
+        stream.read_exact(&mut header).unwrap();
+        assert_eq!(header[0] & 0x0f, 1);
+        let masked = header[1] & 0x80 != 0;
+        let mut len = (header[1] & 0x7f) as usize;
+        if len == 126 {
+            let mut extended = [0_u8; 2];
+            stream.read_exact(&mut extended).unwrap();
+            len = u16::from_be_bytes(extended) as usize;
+        }
+        let mask = if masked {
+            let mut mask = [0_u8; 4];
+            stream.read_exact(&mut mask).unwrap();
+            Some(mask)
+        } else {
+            None
+        };
+        let mut payload = vec![0_u8; len];
+        stream.read_exact(&mut payload).unwrap();
+        if let Some(mask) = mask {
+            for (index, byte) in payload.iter_mut().enumerate() {
+                *byte ^= mask[index % 4];
+            }
+        }
+        String::from_utf8(payload).unwrap()
     }
 
     #[test]
@@ -1383,7 +1931,8 @@ mod tests {
         assert_eq!(created_json["status"], "connected");
         assert_eq!(created_json["commandHistory"].as_array().unwrap().len(), 0);
 
-        let fetched = authenticated_get(app.clone(), &format!("/api/tools/sessions/{session_id}")).await;
+        let fetched =
+            authenticated_get(app.clone(), &format!("/api/tools/sessions/{session_id}")).await;
         assert_eq!(fetched.status(), StatusCode::OK);
         assert_eq!(response_json(fetched).await["id"], session_id);
 
@@ -1433,7 +1982,10 @@ mod tests {
         let execution_id = executed_json["id"].as_str().unwrap();
         let session_id = executed_json["toolSessionId"].as_str().unwrap();
         assert_eq!(executed_json["status"], "running");
-        assert_eq!(executed_json["command"], "fix the compile error in Player.cs");
+        assert_eq!(
+            executed_json["command"],
+            "fix the compile error in Player.cs"
+        );
 
         let broadcast = events.recv().await.unwrap();
         assert_eq!(broadcast.category, crate::protocol::EventCategory::Tool);
@@ -1441,10 +1993,17 @@ mod tests {
         assert_eq!(broadcast.session_id, session_id);
         assert_eq!(broadcast.payload["kind"], "tool-execute");
         assert_eq!(broadcast.payload["toolType"], "claude-code");
-        assert_eq!(broadcast.payload["command"], "fix the compile error in Player.cs");
+        assert_eq!(
+            broadcast.payload["command"],
+            "fix the compile error in Player.cs"
+        );
         assert_eq!(broadcast.payload["executionId"], execution_id);
 
-        let fetched = authenticated_get(app.clone(), &format!("/api/tools/executions/{execution_id}")).await;
+        let fetched = authenticated_get(
+            app.clone(),
+            &format!("/api/tools/executions/{execution_id}"),
+        )
+        .await;
         assert_eq!(fetched.status(), StatusCode::OK);
         assert_eq!(response_json(fetched).await["id"], execution_id);
 
@@ -1474,7 +2033,10 @@ mod tests {
         )
         .await;
         assert_eq!(created.status(), StatusCode::CREATED);
-        let session_id = response_json(created).await["id"].as_str().unwrap().to_string();
+        let session_id = response_json(created).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         let mut events = state.events.subscribe();
         let executed = json_request(
@@ -1491,7 +2053,10 @@ mod tests {
         )
         .await;
         assert_eq!(executed.status(), StatusCode::ACCEPTED);
-        let execution_id = response_json(executed).await["id"].as_str().unwrap().to_string();
+        let execution_id = response_json(executed).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         let broadcast = events.recv().await.unwrap();
         assert_eq!(broadcast.category, crate::protocol::EventCategory::Tool);
@@ -1533,6 +2098,175 @@ mod tests {
             (
                 Method::GET,
                 "/api/tools/executions/missing",
+                serde_json::Value::Null,
+            ),
+        ] {
+            let mut builder = Request::builder().method(method).uri(uri);
+            let request = if body.is_null() {
+                builder.body(Body::empty()).unwrap()
+            } else {
+                builder = builder.header(header::CONTENT_TYPE, "application/json");
+                builder.body(Body::from(body.to_string())).unwrap()
+            };
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_session_crud_lifecycle() {
+        let app = test_app();
+
+        let created = json_request(
+            app.clone(),
+            Method::POST,
+            "/api/remote/sessions",
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let created_json = response_json(created).await;
+        let session_id = created_json["id"].as_str().unwrap();
+        assert_eq!(created_json["status"], "waiting-for-unity");
+        assert_eq!(created_json["stunUrls"][0], "stun:stun.l.google.com:19302");
+
+        let fetched =
+            authenticated_get(app.clone(), &format!("/api/remote/sessions/{session_id}")).await;
+        assert_eq!(fetched.status(), StatusCode::OK);
+        assert_eq!(response_json(fetched).await["id"], session_id);
+
+        let listed = authenticated_get(app.clone(), "/api/remote/sessions").await;
+        assert_eq!(listed.status(), StatusCode::OK);
+        assert_eq!(response_json(listed).await.as_array().unwrap().len(), 1);
+
+        let deleted =
+            delete_request(app.clone(), &format!("/api/remote/sessions/{session_id}")).await;
+        assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+
+        let missing = authenticated_get(app, &format!("/api/remote/sessions/{session_id}")).await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn signaling_relay_between_two_peers() {
+        let state = GatewayState::new(GatewayConfig {
+            token: "secret".to_string(),
+            history_capacity: 8,
+        });
+        state
+            .remote_sessions
+            .lock()
+            .await
+            .insert("session-1".to_string(), test_remote_session("session-1"));
+        let (address, handle) = start_test_server(state).await;
+
+        let relayed = tokio::task::spawn_blocking(move || {
+            let mut unity = websocket_connect(
+                address,
+                "/remote/signaling/session-1?role=unity&token=secret",
+            );
+            let mut web =
+                websocket_connect(address, "/remote/signaling/session-1?role=web&token=secret");
+            let offer = serde_json::json!({
+                "type": "sdp-offer",
+                "payload": { "sdp": "offer-sdp" }
+            })
+            .to_string();
+            websocket_send_text(&mut web, &offer);
+            websocket_read_text(&mut unity)
+        })
+        .await
+        .unwrap();
+
+        handle.abort();
+        let relayed_json: serde_json::Value = serde_json::from_str(&relayed).unwrap();
+        assert_eq!(relayed_json["type"], "sdp-offer");
+        assert_eq!(relayed_json["payload"]["sdp"], "offer-sdp");
+    }
+
+    #[tokio::test]
+    async fn signaling_queues_until_second_peer_connects() {
+        let state = GatewayState::new(GatewayConfig {
+            token: "secret".to_string(),
+            history_capacity: 8,
+        });
+        state
+            .remote_sessions
+            .lock()
+            .await
+            .insert("session-1".to_string(), test_remote_session("session-1"));
+        let (address, handle) = start_test_server(state).await;
+
+        let relayed = tokio::task::spawn_blocking(move || {
+            let mut unity = websocket_connect(
+                address,
+                "/remote/signaling/session-1?role=unity&token=secret",
+            );
+            let candidate = serde_json::json!({
+                "type": "ice-candidate",
+                "payload": { "candidate": "candidate-1" }
+            })
+            .to_string();
+            websocket_send_text(&mut unity, &candidate);
+            let mut web =
+                websocket_connect(address, "/remote/signaling/session-1?role=web&token=secret");
+            websocket_read_text(&mut web)
+        })
+        .await
+        .unwrap();
+
+        handle.abort();
+        let relayed_json: serde_json::Value = serde_json::from_str(&relayed).unwrap();
+        assert_eq!(relayed_json["type"], "ice-candidate");
+        assert_eq!(relayed_json["payload"]["candidate"], "candidate-1");
+    }
+
+    #[tokio::test]
+    async fn webrtc_config_returns_stun_servers() {
+        let app = test_app();
+        let created = json_request(
+            app.clone(),
+            Method::POST,
+            "/api/remote/sessions",
+            serde_json::json!({ "stunUrls": ["stun:example.test:19302"] }),
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let session_id = response_json(created).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let config =
+            authenticated_get(app, &format!("/api/remote/sessions/{session_id}/config")).await;
+        assert_eq!(config.status(), StatusCode::OK);
+        let config_json = response_json(config).await;
+        assert_eq!(
+            config_json["iceServers"][0]["urls"][0],
+            "stun:example.test:19302"
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_endpoints_require_token() {
+        let app = test_app();
+
+        for (method, uri, body) in [
+            (Method::GET, "/api/remote/sessions", serde_json::Value::Null),
+            (Method::POST, "/api/remote/sessions", serde_json::json!({})),
+            (
+                Method::GET,
+                "/api/remote/sessions/missing",
+                serde_json::Value::Null,
+            ),
+            (
+                Method::GET,
+                "/api/remote/sessions/missing/config",
+                serde_json::Value::Null,
+            ),
+            (
+                Method::DELETE,
+                "/api/remote/sessions/missing",
                 serde_json::Value::Null,
             ),
         ] {
