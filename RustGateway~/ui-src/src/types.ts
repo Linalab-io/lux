@@ -1,6 +1,6 @@
 import type { Edge, Node } from 'reactflow'
 
-export type ViewMode = 'nodes' | 'terminal'
+export type ViewMode = 'nodes' | 'terminal' | 'remote'
 export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'closed' | 'error'
 
 export type LuxEventEnvelope = {
@@ -150,3 +150,41 @@ export interface LuxSkill {
   description: string
   toolType: string
 }
+
+export interface RemoteInputEvent {
+  type: 'mouse-move' | 'mouse-down' | 'mouse-up' | 
+        'key-down' | 'key-up' | 
+        'touch-start' | 'touch-move' | 'touch-end' |
+        'scroll'
+  x: number        // normalized 0-1
+  y: number        // normalized 0-1
+  button?: number  // 0=left, 1=right, 2=middle
+  key?: string     // key code
+  touchId?: number
+  deltaX?: number
+  deltaY?: number
+}
+
+export interface WebRTCConfig {
+  iceServers: Array<{
+    urls: string[]
+    username?: string
+    credential?: string
+  }>
+}
+
+export interface RemoteSession {
+  id: string
+  unityClientId: string
+  webClientId: string | null
+  status: 'waiting-for-unity' | 'waiting-for-web' | 'connected' | 'disconnected'
+  stunUrls: string[]
+  turnUrl: string | null
+  createdAtUtc: string
+  updatedAtUtc: string
+}
+
+export type SignalingMessage = 
+  | { type: 'sdp-offer'; payload: { sdp: string } }
+  | { type: 'sdp-answer'; payload: { sdp: string } }
+  | { type: 'ice-candidate'; payload: { candidate: string; sdpMid: string; sdpMLineIndex: number } }

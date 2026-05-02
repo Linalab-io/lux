@@ -5,12 +5,13 @@ import './App.css'
 import { AITerminal } from './components/AITerminal'
 import { NodeEditor } from './components/NodeEditor'
 import type { ConnectionState, LuxEventEnvelope, ViewMode } from './types'
-
+import { SessionManager } from './components/SessionManager'
+import { RemoteViewer } from './components/RemoteViewer'
 function App() {
   const [activeView, setActiveView] = useState<ViewMode>('nodes')
   const [events, setEvents] = useState<LuxEventEnvelope[]>([])
   const [connectionState, setConnectionState] = useState<ConnectionState>('idle')
-
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const latestEvent = events[0]
 
   return (
@@ -33,13 +34,27 @@ function App() {
         <button className={activeView === 'terminal' ? 'active' : ''} onClick={() => setActiveView('terminal')}>
           AI terminal
         </button>
+        <button className={activeView === 'remote' ? 'active' : ''} onClick={() => setActiveView('remote')}>
+          Remote
+        </button>
       </nav>
 
       <section className="workspace-card">
-        {activeView === 'nodes' ? (
+        {activeView === 'nodes' && (
           <NodeEditor latestEvent={latestEvent} />
-        ) : (
+        )}
+        {activeView === 'terminal' && (
           <AITerminal onEvent={setEvents} onConnectionState={setConnectionState} />
+        )}
+        {activeView === 'remote' && (
+          activeSessionId ? (
+            <RemoteViewer 
+              sessionId={activeSessionId} 
+              onDisconnect={() => setActiveSessionId(null)} 
+            />
+          ) : (
+            <SessionManager onSessionSelect={setActiveSessionId} />
+          )
         )}
       </section>
     </main>
