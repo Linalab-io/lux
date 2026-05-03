@@ -19,12 +19,13 @@ namespace Linalab.Lux.Editor
         static double recordStartedAt;
         static int recordFrameIndex;
         static string recordRequestId;
+        static string recordOutputPath;
         static LuxInputDeviceStates lastRecordedStates;
         static LuxInputRecordingFile replayFile;
         static int replayFrameCursor;
         static string replayFilePath;
 
-        public static UnityAiBridgeInputRecordPayload Record(string action, string requestId)
+        public static UnityAiBridgeInputRecordPayload Record(string action, string requestId, string outputPath)
         {
             action = NormalizeAction(action);
             if (!EditorApplication.isPlaying)
@@ -35,7 +36,7 @@ namespace Linalab.Lux.Editor
             switch (action)
             {
                 case "start":
-                    return StartRecording(requestId);
+                    return StartRecording(requestId, outputPath);
                 case "stop":
                     return StopRecording();
                 default:
@@ -64,7 +65,7 @@ namespace Linalab.Lux.Editor
             }
         }
 
-        static UnityAiBridgeInputRecordPayload StartRecording(string requestId)
+        static UnityAiBridgeInputRecordPayload StartRecording(string requestId, string outputPath)
         {
             lock (SessionLock)
             {
@@ -73,6 +74,7 @@ namespace Linalab.Lux.Editor
                 recordStartedAt = EditorApplication.timeSinceStartup;
                 recordFrameIndex = 0;
                 recordRequestId = CreateSafeRequestId(requestId);
+                recordOutputPath = outputPath ?? string.Empty;
                 RecordingFrames.Clear();
                 lastRecordedStates = CaptureStates();
                 EditorApplication.update += CaptureRecordingFrame;
@@ -93,6 +95,7 @@ namespace Linalab.Lux.Editor
         {
             LuxInputFrame[] frames;
             string requestId;
+            string requestedOutputPath;
             lock (SessionLock)
             {
                 if (activeSession != LuxInputSessionKind.Recording)
@@ -113,12 +116,13 @@ namespace Linalab.Lux.Editor
                 activeSession = LuxInputSessionKind.None;
                 frames = RecordingFrames.ToArray();
                 requestId = recordRequestId;
+                requestedOutputPath = recordOutputPath;
                 RecordingFrames.Clear();
                 recordRequestId = string.Empty;
+                recordOutputPath = string.Empty;
             }
 
-            string outputDirectory = LuxArtifactPaths.GetPersistentOutputPath("input-recordings");
-            string outputPath = Path.Combine(outputDirectory, requestId + ".json");
+            string outputPath = ResolveRecordingOutputPath(requestedOutputPath, requestId);
             var recording = new LuxInputRecordingFile
             {
                 schemaVersion = 1,
@@ -140,6 +144,39 @@ namespace Linalab.Lux.Editor
                 mediaType = MediaType,
                 message = "Input recording stopped."
             };
+        }
+
+        static string ResolveRecordingOutputPath(string requestedOutputPath, string requestId)
+        {
+            if (string.IsNullOrWhiteSpace(requestedOutputPath))
+            {
+                string outputDirectory = LuxArtifactPaths.GetPersistentOutputPath("input-recordings");
+                return Path.Combine(outputDirectory, requestId + ".json");
+            }
+
+            string projectRoot = Path.GetFullPath(LuxBridgeSettings.GetProjectRoot());
+            string normalizedPath = Path.GetFullPath(Path.IsPathRooted(requestedOutputPath)
+                ? requestedOutputPath
+                : Path.Combine(projectRoot, requestedOutputPath));
+            string projectRootWithSeparator = projectRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+
+            if (!normalizedPath.StartsWith(projectRootWithSeparator, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(normalizedPath, projectRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException($"Recording output path escapes the project root: {normalizedPath}");
+            }
+            if (normalizedPath.IndexOf(".uloop", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                throw new ArgumentException($"Recording output path must not use .uloop: {normalizedPath}");
+            }
+
+            var directory = Path.GetDirectoryName(normalizedPath);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+            return normalizedPath;
         }
 
         static UnityAiBridgeInputReplayPayload StartReplay(string filePath)

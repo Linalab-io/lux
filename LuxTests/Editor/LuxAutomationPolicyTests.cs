@@ -56,7 +56,7 @@ namespace Linalab.Lux.Editor.Tests
             Assert.That(response.ok, Is.True);
             Assert.That(response.payload.luxContext, Is.Not.Null);
             Assert.That(response.payload.luxContext.packageName, Is.EqualTo("com.linalab.lux"));
-            Assert.That(response.payload.luxContext.controlTransport, Is.EqualTo(LuxRemoteGatewayPlan.ControlTransport));
+            Assert.That(response.payload.luxContext.controlTransport, Is.EqualTo(LuxAutomationGateway.RemoteAddonUnavailable));
             Assert.That(response.payload.luxContext.automationBlockedTokens, Does.Contain("sudo"));
         }
 

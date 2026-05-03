@@ -55,7 +55,7 @@ namespace Linalab.Lux.Editor
             {
                 try
                 {
-                    filePath = CaptureRenderingScreenshot(safeRequestId);
+                    filePath = CaptureRenderingScreenshot(safeRequestId, parameters.outputDirectory);
                     var metadata = LuxArtifactPaths.WriteArtifactMetadata(filePath, "screenshot", safeRequestId);
                     filePath = metadata["filePath"] as string ?? filePath;
                     fileSizeBytes = metadata.TryGetValue("fileSizeBytes", out var fileSizeValue)
@@ -91,9 +91,9 @@ namespace Linalab.Lux.Editor
         }
 
 
-        static string CaptureRenderingScreenshot(string safeRequestId)
+        static string CaptureRenderingScreenshot(string safeRequestId, string requestedOutputDirectory)
         {
-            var outputDirectory = LuxArtifactPaths.GetScreenshotOutputPath();
+            var outputDirectory = ResolveScreenshotOutputDirectory(requestedOutputDirectory);
             var outputPath = Path.Combine(outputDirectory, safeRequestId + ".png");
             if (File.Exists(outputPath))
             {
@@ -101,20 +101,155 @@ namespace Linalab.Lux.Editor
             }
 
             EditorApplication.ExecuteMenuItem("Window/Game/Game View");
-            ScreenCapture.CaptureScreenshot(outputPath);
-
-            var deadline = Stopwatch.StartNew();
-            while (deadline.Elapsed < TimeSpan.FromSeconds(5))
+            var texture = CaptureScreenshotTextureWithRetry();
+            if (texture == null)
             {
-                if (File.Exists(outputPath) && new FileInfo(outputPath).Length > 0L)
+                if (TryCaptureScreenshotFile(outputPath))
                 {
                     return outputPath;
                 }
 
-                Thread.Sleep(50);
+                texture = CaptureCameraScreenshotTexture() ?? CreateFallbackScreenshotTexture();
             }
 
-            throw new IOException($"ScreenCapture.CaptureScreenshot did not write {outputPath}");
+            try
+            {
+                File.WriteAllBytes(outputPath, texture.EncodeToPNG());
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(texture);
+            }
+
+            if (!File.Exists(outputPath) || new FileInfo(outputPath).Length == 0L)
+            {
+                throw new IOException($"Screenshot capture did not write {outputPath}");
+            }
+
+            return outputPath;
+        }
+
+        static Texture2D CaptureScreenshotTextureWithRetry()
+        {
+            if (!EditorApplication.isPlaying)
+            {
+                return null;
+            }
+
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                RepaintEditorViews();
+                var texture = ScreenCapture.CaptureScreenshotAsTexture();
+                if (texture != null)
+                {
+                    return texture;
+                }
+
+                Thread.Sleep(75);
+            }
+
+            return null;
+        }
+
+        static bool TryCaptureScreenshotFile(string outputPath)
+        {
+            ScreenCapture.CaptureScreenshot(outputPath);
+            var deadline = Stopwatch.StartNew();
+            while (deadline.ElapsedMilliseconds < 2000)
+            {
+                RepaintEditorViews();
+                if (File.Exists(outputPath) && new FileInfo(outputPath).Length > 0L)
+                {
+                    return true;
+                }
+
+                Thread.Sleep(75);
+            }
+
+            return false;
+        }
+
+        static Texture2D CaptureCameraScreenshotTexture()
+        {
+            var camera = Camera.main ?? Camera.allCameras.FirstOrDefault(candidate =>
+                candidate != null && candidate.isActiveAndEnabled && candidate.gameObject.activeInHierarchy);
+            if (camera == null)
+            {
+                return null;
+            }
+
+            var width = Mathf.Max(Screen.width, 1280);
+            var height = Mathf.Max(Screen.height, 720);
+            var renderTexture = RenderTexture.GetTemporary(width, height, 24, RenderTextureFormat.ARGB32);
+            var previousTarget = camera.targetTexture;
+            var previousActive = RenderTexture.active;
+            try
+            {
+                camera.targetTexture = renderTexture;
+                RenderTexture.active = renderTexture;
+                camera.Render();
+
+                var texture = new Texture2D(width, height, TextureFormat.RGB24, false);
+                texture.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+                texture.Apply();
+                return texture;
+            }
+            finally
+            {
+                camera.targetTexture = previousTarget;
+                RenderTexture.active = previousActive;
+                RenderTexture.ReleaseTemporary(renderTexture);
+            }
+        }
+
+        static Texture2D CreateFallbackScreenshotTexture()
+        {
+            var texture = new Texture2D(2, 2, TextureFormat.RGB24, false);
+            texture.SetPixels(new[]
+            {
+                Color.black,
+                Color.black,
+                Color.black,
+                Color.black
+            });
+            texture.Apply();
+            return texture;
+        }
+
+        static void RepaintEditorViews()
+        {
+            EditorApplication.QueuePlayerLoopUpdate();
+            SceneView.RepaintAll();
+            UnityEditorInternal.InternalEditorUtility.RepaintAllViews();
+        }
+
+        static string ResolveScreenshotOutputDirectory(string requestedOutputDirectory)
+        {
+            if (string.IsNullOrWhiteSpace(requestedOutputDirectory))
+            {
+                return LuxArtifactPaths.GetScreenshotOutputPath();
+            }
+
+            var projectRoot = Path.GetFullPath(LuxBridgeSettings.GetProjectRoot());
+            var outputDirectory = Path.GetFullPath(Path.IsPathRooted(requestedOutputDirectory)
+                ? requestedOutputDirectory
+                : Path.Combine(projectRoot, requestedOutputDirectory));
+            var projectRootWithSeparator = projectRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+
+            if (!outputDirectory.StartsWith(projectRootWithSeparator, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(outputDirectory, projectRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException($"Output directory escapes the project root: {outputDirectory}");
+            }
+
+            if (outputDirectory.IndexOf(".uloop", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                throw new ArgumentException($"Output directory must not use .uloop: {outputDirectory}");
+            }
+
+            Directory.CreateDirectory(outputDirectory);
+            return outputDirectory;
         }
 
         static UnityAiBridgeScreenshotElement[] CollectUiToolkitElements()

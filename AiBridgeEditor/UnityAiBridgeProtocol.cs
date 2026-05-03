@@ -51,7 +51,9 @@ namespace Linalab.UnityAiBridge.Editor
             "simulate_lux_mouse_input",
             "record_lux_input",
             "replay_lux_input",
-            "execute_lux_dynamic_code"
+            "execute_lux_dynamic_code",
+            "compile_lux_project",
+            "run_lux_tests"
         };
         private static bool registryReady;
         private static string registryReadySource = string.Empty;
@@ -156,7 +158,11 @@ namespace Linalab.UnityAiBridge.Editor
 
         public static bool TryRefreshCommandRegistry(string reason)
         {
-            var registrationType = Type.GetType("Linalab.Lux.Editor.LuxAiBridgeProtocolRegistration, Linalab.Lux.Editor");
+            var registrationType = Type.GetType("Linalab.Lux.Editor.LuxAiBridgeProtocolRegistration, Linalab.Lux.Editor")
+                ?? AppDomain.CurrentDomain
+                    .GetAssemblies()
+                    .Select(assembly => assembly.GetType("Linalab.Lux.Editor.LuxAiBridgeProtocolRegistration", false))
+                    .FirstOrDefault(type => type != null);
             var registerMethod = registrationType?.GetMethod(
                 "RegisterCommands",
                 System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
@@ -416,13 +422,18 @@ namespace Linalab.UnityAiBridge.Editor
         public string screenshotCaptureMode;
         public bool screenshotAnnotateElements;
         public bool screenshotElementsOnly;
+        public string outputDirectory;
         public string mouseUiAction;
         public float mouseUiX;
         public float mouseUiY;
         public int mouseUiDurationMs;
+        public bool bypassRaycast;
+        public string targetPath;
+        public string dropTargetPath;
         public string inputAction;
         public string inputKey;
         public string inputButton;
+        public string outputPath;
         public int inputDurationMs;
         public float inputDeltaX;
         public float inputDeltaY;
@@ -431,6 +442,8 @@ namespace Linalab.UnityAiBridge.Editor
         public int inputSteps;
         public string inputFilePath;
         public string dynamicCode;
+        public string testPlatform;
+        public string testResults;
         public string eventTypes;
     }
 
@@ -466,6 +479,8 @@ namespace Linalab.UnityAiBridge.Editor
             public UnityAiBridgeInputRecordPayload inputRecordResult;
             public UnityAiBridgeInputReplayPayload inputReplayResult;
             public UnityAiBridgeDynamicCodeResultPayload dynamicCodeResult;
+            public UnityAiBridgeCompileResultPayload compileResult;
+            public UnityAiBridgeTestRunResultPayload testRunResult;
         }
 
     [Serializable]
@@ -621,6 +636,27 @@ namespace Linalab.UnityAiBridge.Editor
         public UnityAiBridgeDynamicCodeDiagnostic[] diagnostics;
         public UnityAiBridgeConsoleLogEntry[] logs;
         public long elapsedTimeMs;
+    }
+
+    [Serializable]
+    public sealed class UnityAiBridgeCompileResultPayload
+    {
+        public bool ok;
+        public int error_count;
+        public string message;
+        public string timestamp_utc;
+    }
+
+    [Serializable]
+    public sealed class UnityAiBridgeTestRunResultPayload
+    {
+        public bool ok;
+        public string status;
+        public string testId;
+        public string testPlatform;
+        public string testResults;
+        public string message;
+        public string timestamp_utc;
     }
 
     [Serializable]

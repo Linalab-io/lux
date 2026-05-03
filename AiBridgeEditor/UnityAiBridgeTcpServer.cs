@@ -398,6 +398,8 @@ namespace Linalab.UnityAiBridge.Editor
                 case "get_lux_hierarchy":
                 case "control_lux_play_mode":
                 case "capture_lux_screenshot":
+                case "compile_lux_project":
+                case "run_lux_tests":
                 case "simulate_lux_mouse_ui":
                 case "simulate_lux_keyboard":
                 case "simulate_lux_mouse_input":
@@ -846,15 +848,15 @@ namespace Linalab.UnityAiBridge.Editor
                     approvalGranted = ExtractBool(line, "approvalGranted"),
                     scenePath = ExtractString(line, "scenePath"),
                     sceneSmokeObjectCount = ExtractInt(line, "sceneSmokeObjectCount"),
-                    findGameObjectsSearchMode = ExtractString(line, "findGameObjectsSearchMode"),
-                    findGameObjectsName = ExtractString(line, "findGameObjectsName"),
-                    findGameObjectsRegex = ExtractString(line, "findGameObjectsRegex"),
-                    findGameObjectsPath = ExtractString(line, "findGameObjectsPath"),
-                    findGameObjectsComponent = ExtractString(line, "findGameObjectsComponent"),
-                    findGameObjectsTag = ExtractString(line, "findGameObjectsTag"),
-                    findGameObjectsLayer = ExtractString(line, "findGameObjectsLayer"),
-                    findGameObjectsActiveState = ExtractString(line, "findGameObjectsActiveState"),
-                    findGameObjectsInlineLimit = ExtractInt(line, "findGameObjectsInlineLimit"),
+                    findGameObjectsSearchMode = ExtractString(line, "findGameObjectsSearchMode") ?? ExtractString(line, "findSearchMode") ?? ExtractString(line, "searchMode"),
+                    findGameObjectsName = ExtractString(line, "findGameObjectsName") ?? ExtractString(line, "findSearchText") ?? ExtractString(line, "name"),
+                    findGameObjectsRegex = ExtractString(line, "findGameObjectsRegex") ?? ExtractString(line, "regex"),
+                    findGameObjectsPath = ExtractString(line, "findGameObjectsPath") ?? ExtractString(line, "path"),
+                    findGameObjectsComponent = ExtractString(line, "findGameObjectsComponent") ?? ExtractString(line, "component"),
+                    findGameObjectsTag = ExtractString(line, "findGameObjectsTag") ?? ExtractString(line, "tag"),
+                    findGameObjectsLayer = ExtractString(line, "findGameObjectsLayer") ?? ExtractString(line, "layer"),
+                    findGameObjectsActiveState = ExtractString(line, "findGameObjectsActiveState") ?? ExtractString(line, "activeState"),
+                    findGameObjectsInlineLimit = ExtractInt(line, "findGameObjectsInlineLimit") != 0 ? ExtractInt(line, "findGameObjectsInlineLimit") : ExtractInt(line, "findInlineLimit"),
                     hierarchyAll = ExtractBool(line, "hierarchyAll"),
                     hierarchyRootPath = ExtractString(line, "hierarchyRootPath"),
                     hierarchyUseSelection = ExtractBool(line, "hierarchyUseSelection"),
@@ -862,13 +864,18 @@ namespace Linalab.UnityAiBridge.Editor
                     screenshotCaptureMode = ExtractString(line, "screenshotCaptureMode"),
                     screenshotAnnotateElements = ExtractBool(line, "screenshotAnnotateElements"),
                     screenshotElementsOnly = ExtractBool(line, "screenshotElementsOnly"),
+                    outputDirectory = ExtractString(line, "outputDirectory"),
                     mouseUiAction = ExtractString(line, "mouseUiAction"),
                     mouseUiX = ExtractFloat(line, "mouseUiX"),
                     mouseUiY = ExtractFloat(line, "mouseUiY"),
                     mouseUiDurationMs = ExtractInt(line, "mouseUiDurationMs"),
+                    bypassRaycast = ExtractBool(line, "bypassRaycast"),
+                    targetPath = ExtractString(line, "targetPath"),
+                    dropTargetPath = ExtractString(line, "dropTargetPath"),
                     inputAction = ExtractString(line, "inputAction"),
                     inputKey = ExtractString(line, "inputKey"),
                     inputButton = ExtractString(line, "inputButton"),
+                    outputPath = ExtractString(line, "outputPath"),
                     inputDurationMs = ExtractInt(line, "inputDurationMs"),
                     inputDeltaX = ExtractFloat(line, "inputDeltaX"),
                     inputDeltaY = ExtractFloat(line, "inputDeltaY"),
@@ -1011,6 +1018,12 @@ namespace Linalab.UnityAiBridge.Editor
             builder.Append(",\"dynamicCodeResult\":");
             AppendDynamicCodeResult(builder, payload.dynamicCodeResult);
 
+            builder.Append(",\"compileResult\":");
+            AppendCompileResult(builder, payload.compileResult);
+
+            builder.Append(",\"testRunResult\":");
+            AppendTestRunResult(builder, payload.testRunResult);
+
             builder.Append('}');
         }
 
@@ -1055,6 +1068,41 @@ namespace Linalab.UnityAiBridge.Editor
             AppendJsonProperty(builder, "output", result.output, true);
             AppendJsonProperty(builder, "error", result.error, true);
             AppendJsonProperty(builder, "message", result.message, true);
+            builder.Append('}');
+        }
+
+        private static void AppendCompileResult(StringBuilder builder, UnityAiBridgeCompileResultPayload result)
+        {
+            if (result == null)
+            {
+                builder.Append("null");
+                return;
+            }
+
+            builder.Append('{');
+            AppendJsonProperty(builder, "ok", result.ok, false);
+            AppendJsonProperty(builder, "error_count", result.error_count, true);
+            AppendJsonProperty(builder, "message", result.message, true);
+            AppendJsonProperty(builder, "timestamp_utc", result.timestamp_utc, true);
+            builder.Append('}');
+        }
+
+        private static void AppendTestRunResult(StringBuilder builder, UnityAiBridgeTestRunResultPayload result)
+        {
+            if (result == null)
+            {
+                builder.Append("null");
+                return;
+            }
+
+            builder.Append('{');
+            AppendJsonProperty(builder, "ok", result.ok, false);
+            AppendJsonProperty(builder, "status", result.status, true);
+            AppendJsonProperty(builder, "testId", result.testId, true);
+            AppendJsonProperty(builder, "testPlatform", result.testPlatform, true);
+            AppendJsonProperty(builder, "testResults", result.testResults, true);
+            AppendJsonProperty(builder, "message", result.message, true);
+            AppendJsonProperty(builder, "timestamp_utc", result.timestamp_utc, true);
             builder.Append('}');
         }
 

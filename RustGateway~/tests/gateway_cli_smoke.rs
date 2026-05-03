@@ -2065,6 +2065,371 @@ fn rust_lux_auto_detects_unity_path_from_project_version() {
     );
 }
 
+#[test]
+fn rust_lux_unity_scene_smoke_sends_object_count_and_scene_path() {
+    let temp_dir = create_temp_dir("lux-unity-scene-smoke");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let discovery = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": TOKEN,
+    });
+    fs::write(bridge_dir.join("server.json"), discovery.to_string()).expect("write discovery");
+
+    let result_path = project_root.join("TestResults/LuxSceneSmokeResult.json");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept client");
+        let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        request_reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+        let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+        assert_eq!(request["command"], "run_lux_scene_smoke");
+        assert_eq!(request["token"], TOKEN);
+        assert_eq!(request["params"]["sceneSmokeObjectCount"], 5);
+
+        let response = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request["requestId"],
+            "ok": true,
+            "payload": {
+                "sceneSmokeResult": {
+                    "success": true,
+                    "objectCount": 5,
+                    "testedObjects": 5,
+                    "allTestsPassed": true,
+                    "testResults": []
+                }
+            },
+            "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+        });
+
+        stream
+            .write_all(format!("{}\n", response).as_bytes())
+            .expect("write response");
+        fs::create_dir_all(result_path.parent().expect("result parent"))
+            .expect("create results dir");
+        fs::write(
+            &result_path,
+            serde_json::json!({
+                "ok": true,
+                "success": true,
+                "objectCount": 5,
+                "testedObjects": 5,
+                "allTestsPassed": true,
+                "testResults": []
+            })
+            .to_string(),
+        )
+        .expect("write scene smoke result");
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "scene-smoke",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+            "--object-count",
+            "5",
+        ])
+        .output()
+        .expect("run lux unity scene-smoke");
+
+    assert_command_success(&output, "lux unity scene-smoke");
+    let json: Value = serde_json::from_slice(&output.stdout).expect("output JSON");
+    assert_eq!(json["success"], true);
+    assert_eq!(json["objectCount"], 5);
+    assert_eq!(json["allTestsPassed"], true);
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn rust_lux_unity_create_objects_sends_scene_path_and_count() {
+    let temp_dir = create_temp_dir("lux-unity-create-objects");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let discovery = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": TOKEN,
+    });
+    fs::write(bridge_dir.join("server.json"), discovery.to_string()).expect("write discovery");
+
+    let result_path = project_root.join("TestResults/LuxSceneSmokeResult.json");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept client");
+        let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        request_reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+        let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+        assert_eq!(request["command"], "create_lux_scene_objects");
+        assert_eq!(request["token"], TOKEN);
+        assert_eq!(request["params"]["createObjectsCount"], 3);
+        assert_eq!(
+            request["params"]["createObjectsScenePath"],
+            "Assets/Test.unity"
+        );
+
+        let response = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request["requestId"],
+            "ok": true,
+            "payload": {
+                "createObjectsResult": {
+                    "success": true,
+                    "createdCount": 3,
+                    "scenePath": "Assets/Test.unity",
+                    "objects": []
+                }
+            },
+            "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+        });
+
+        stream
+            .write_all(format!("{}\n", response).as_bytes())
+            .expect("write response");
+        fs::create_dir_all(result_path.parent().expect("result parent"))
+            .expect("create results dir");
+        fs::write(
+            &result_path,
+            serde_json::json!({
+                "ok": true,
+                "success": true,
+                "createdCount": 3,
+                "scenePath": "Assets/Test.unity",
+                "objects": []
+            })
+            .to_string(),
+        )
+        .expect("write create objects result");
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "create-objects",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+            "--object-count",
+            "3",
+            "--scene-path",
+            "Assets/Test.unity",
+        ])
+        .output()
+        .expect("run lux unity create-objects");
+
+    assert_command_success(&output, "lux unity create-objects");
+    let json: Value = serde_json::from_slice(&output.stdout).expect("output JSON");
+    assert_eq!(json["success"], true);
+    assert_eq!(json["createdCount"], 3);
+    assert_eq!(json["scenePath"], "Assets/Test.unity");
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn rust_lux_unity_find_game_objects_sends_search_mode() {
+    let temp_dir = create_temp_dir("lux-unity-find-game-objects");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let discovery = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": TOKEN,
+    });
+    fs::write(bridge_dir.join("server.json"), discovery.to_string()).expect("write discovery");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept client");
+        let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        request_reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+        let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+        assert_eq!(request["command"], "find_lux_game_objects");
+        assert_eq!(request["token"], TOKEN);
+        assert_eq!(request["params"]["findSearchMode"], "name");
+        assert_eq!(request["params"]["findSearchText"], "Player");
+        assert_eq!(request["params"]["findInlineLimit"], 5);
+
+        let response = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request["requestId"],
+            "ok": true,
+            "payload": {
+                "findGameObjectsResult": {
+                    "success": true,
+                    "searchMode": "name",
+                    "foundCount": 1,
+                    "objects": [{
+                        "name": "Player",
+                        "path": "GamePlay/Player",
+                        "type": "GameObject"
+                    }]
+                }
+            },
+            "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+        });
+
+        stream
+            .write_all(format!("{}\n", response).as_bytes())
+            .expect("write response");
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "find-game-objects",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+            "--search-mode",
+            "name",
+            "--search-text",
+            "Player",
+            "--inline-limit",
+            "5",
+        ])
+        .output()
+        .expect("run lux unity find-game-objects");
+
+    assert_command_success(&output, "lux unity find-game-objects");
+    let json: Value = serde_json::from_slice(&output.stdout).expect("output JSON");
+    assert_eq!(json["success"], true);
+    assert_eq!(json["foundCount"], 1);
+    assert_eq!(json["objects"][0]["name"], "Player");
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn rust_lux_unity_backend_status_returns_backend_info() {
+    let temp_dir = create_temp_dir("lux-unity-backend-status");
+    let project_root = temp_dir.join("Project");
+    let bridge_dir = project_root.join("Library/UnityAiBridge");
+    fs::create_dir_all(&bridge_dir).expect("create Unity AI Bridge dir");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Unity TCP server");
+    let port = listener.local_addr().expect("read port").port();
+    let discovery = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": TOKEN,
+    });
+    fs::write(bridge_dir.join("server.json"), discovery.to_string()).expect("write discovery");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept client");
+        let mut request_reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        request_reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+        let request: Value = serde_json::from_str(request_line.trim()).expect("request JSON");
+        assert_eq!(request["command"], "get_backend_status");
+        assert_eq!(request["token"], TOKEN);
+
+        let response = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request["requestId"],
+            "ok": true,
+            "payload": {
+                "backendStatus": {
+                    "connected": true,
+                    "backendVersion": "0.1.0",
+                    "protocolVersion": "1",
+                    "uptime": 42
+                }
+            },
+            "capturedAtUtc": "2026-04-30T00:00:00.0000000Z"
+        });
+
+        stream
+            .write_all(format!("{}\n", response).as_bytes())
+            .expect("write response");
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "unity",
+            "backend-status",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+        ])
+        .output()
+        .expect("run lux unity backend-status");
+
+    assert_command_success(&output, "lux unity backend-status");
+    let json: Value = serde_json::from_slice(&output.stdout).expect("output JSON");
+    assert_eq!(json["connected"], true);
+    assert_eq!(json["backendVersion"], "0.1.0");
+
+    server.join().expect("join fake Unity TCP server");
+}
+
+#[test]
+fn addon_list_shows_available_addons() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args(["addon", "list"])
+        .output()
+        .expect("run lux addon list");
+
+    assert_command_success(&output, "lux addon list");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("webrtc") || stdout.contains("codex-image"),
+        "expected addon names in stdout, got: {stdout}"
+    );
+
+    let json_output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args(["addon", "list", "--json"])
+        .output()
+        .expect("run lux addon list --json");
+
+    assert_command_success(&json_output, "lux addon list --json");
+    let json: Value = serde_json::from_slice(&json_output.stdout).expect("addon list JSON");
+    assert!(json
+        .as_array()
+        .expect("addon list array")
+        .iter()
+        .any(|addon| {
+            addon["manifest"]["name"] == "webrtc" || addon["manifest"]["name"] == "codex-image"
+        }));
+}
+
+#[test]
+fn addon_info_shows_addon_details() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args(["addon", "info", "webrtc"])
+        .output()
+        .expect("run lux addon info webrtc");
+
+    assert_command_success(&output, "lux addon info webrtc");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("webrtc") || stdout.contains("WebRTC"),
+        "expected webrtc addon details in stdout, got: {stdout}"
+    );
+}
+
 fn assert_command_help_contains(args: &[&str], expected: &str) {
     let output = Command::new(env!("CARGO_BIN_EXE_lux"))
         .args(args)
@@ -2108,8 +2473,11 @@ fn create_test_skill_source(name: &str) -> std::path::PathBuf {
         ),
     )
     .expect("write test skill manifest");
-    fs::write(source.join("SKILL.md"), format!("# {name}\n\nSmoke test skill.\n"))
-        .expect("write test skill body");
+    fs::write(
+        source.join("SKILL.md"),
+        format!("# {name}\n\nSmoke test skill.\n"),
+    )
+    .expect("write test skill body");
 
     let references = source.join("references");
     fs::create_dir_all(&references).expect("create references dir");

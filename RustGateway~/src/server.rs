@@ -8,8 +8,7 @@ use std::{
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path as AxumPath, Query, State,
-        Request,
+        Path as AxumPath, Query, Request, State,
     },
     http::{HeaderMap, StatusCode, Uri},
     middleware::{self, Next},
@@ -1755,7 +1754,12 @@ mod tests {
     #[tokio::test]
     async fn api_health_reports_uptime() {
         let response = test_app()
-            .oneshot(Request::builder().uri("/api/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 

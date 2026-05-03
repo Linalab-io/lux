@@ -25,7 +25,7 @@ namespace Linalab.Lux.Editor
             var parameters = request.@params ?? new UnityAiBridgeProtocolRequestParameters();
             try
             {
-                var payload = LuxInputRecording.Record(parameters.inputAction, request.requestId);
+                var payload = LuxInputRecording.Record(parameters.inputAction, request.requestId, parameters.outputPath);
                 return UnityAiBridgeProtocol.CreateOkResponse(
                     request.requestId,
                     new UnityAiBridgeProtocolResponsePayload { inputRecordResult = payload });
@@ -207,6 +207,7 @@ namespace Linalab.Lux.Editor
             var parameters = request.@params ?? new UnityAiBridgeProtocolRequestParameters();
             var action = NormalizeInputAction(parameters.mouseUiAction, "click");
             var position = new Vector2(parameters.mouseUiX, parameters.mouseUiY);
+            var bypassRaycast = parameters.bypassRaycast;
             var eventSystem = EventSystem.current;
             if (eventSystem == null)
             {
@@ -216,7 +217,7 @@ namespace Linalab.Lux.Editor
                     "No active UnityEngine.EventSystems.EventSystem is available.");
             }
 
-            if (!HasInputSystemUiRaycaster())
+            if (!bypassRaycast && !HasInputSystemUiRaycaster())
             {
                 return UnityAiBridgeProtocol.CreateErrorResponse(
                     request.requestId,
@@ -224,8 +225,38 @@ namespace Linalab.Lux.Editor
                     "No active InputSystemUIRaycaster is available for UI raycasting.");
             }
 
-            var raycastResults = RaycastUi(eventSystem, position, out var pointerEventData);
-            var target = raycastResults.Count == 0 ? null : raycastResults[0].gameObject;
+            List<RaycastResult> raycastResults;
+            PointerEventData pointerEventData;
+            GameObject target;
+            if (bypassRaycast)
+            {
+                if (string.IsNullOrWhiteSpace(parameters.targetPath))
+                {
+                    return UnityAiBridgeProtocol.CreateErrorResponse(
+                        request.requestId,
+                        UnityAiBridgeProtocol.ErrorCodeInvalidParams,
+                        "--bypass-raycast requires --target-path.");
+                }
+
+                var eventTargetPath = action == "drag-end" && !string.IsNullOrWhiteSpace(parameters.dropTargetPath)
+                    ? parameters.dropTargetPath
+                    : parameters.targetPath;
+                target = ResolveUiTargetByPath(eventTargetPath);
+                if (target == null)
+                {
+                    return UnityAiBridgeProtocol.CreateErrorResponse(
+                        request.requestId,
+                        UnityAiBridgeProtocol.ErrorCodeInvalidParams,
+                        $"UI target path was not found: {eventTargetPath}");
+                }
+
+                raycastResults = CreateSyntheticRaycast(eventSystem, position, target, out pointerEventData);
+            }
+            else
+            {
+                raycastResults = RaycastUi(eventSystem, position, out pointerEventData);
+                target = raycastResults.Count == 0 ? null : raycastResults[0].gameObject;
+            }
             if ((action == "click" || action == "long-press" || action == "drag-start") && target == null)
             {
                 return UnityAiBridgeProtocol.CreateErrorResponse(
@@ -347,6 +378,65 @@ namespace Linalab.Lux.Editor
             }
 
             return raycastResults;
+        }
+
+        static List<RaycastResult> CreateSyntheticRaycast(EventSystem eventSystem, Vector2 position, GameObject target, out PointerEventData pointerEventData)
+        {
+            pointerEventData = new PointerEventData(eventSystem)
+            {
+                button = PointerEventData.InputButton.Left,
+                clickCount = 1,
+                position = position,
+                pressPosition = position,
+                pointerEnter = target,
+                pointerPress = target,
+                rawPointerPress = target
+            };
+
+            var raycast = new RaycastResult
+            {
+                gameObject = target,
+                distance = 0f,
+                index = 0,
+                screenPosition = position,
+                worldPosition = target.transform.position
+            };
+            pointerEventData.pointerCurrentRaycast = raycast;
+            return new List<RaycastResult> { raycast };
+        }
+
+        static GameObject ResolveUiTargetByPath(string targetPath)
+        {
+            if (string.IsNullOrWhiteSpace(targetPath))
+            {
+                return null;
+            }
+
+            var activeScene = EditorSceneManager.GetActiveScene();
+            if (!activeScene.IsValid() || !activeScene.isLoaded)
+            {
+                return null;
+            }
+
+            var normalizedTargetPath = targetPath.Trim();
+            foreach (var root in activeScene.GetRootGameObjects())
+            {
+                if (root == null)
+                {
+                    continue;
+                }
+
+                var transforms = root.GetComponentsInChildren<Transform>(true);
+                foreach (var transform in transforms)
+                {
+                    if (transform != null && string.Equals(BuildHierarchyPath(transform.gameObject), normalizedTargetPath, StringComparison.Ordinal))
+                    {
+                        return transform.gameObject;
+                    }
+                }
+            }
+
+            return null;
         }
 
         static void ExecutePointerClick(PointerEventData eventData, GameObject target)

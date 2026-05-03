@@ -8,9 +8,36 @@ export const UNITY_SELECTED_FILE_CONTEXT_COMMAND = 'get_selected_file_context';
 export const LUX_CONTEXT_TOOL_NAME = 'lux_context';
 export const LUX_EXECUTE_SHELL_TOOL_NAME = 'lux_execute_shell';
 export const LUX_EXECUTE_GIT_TOOL_NAME = 'lux_execute_git';
+export const LUX_CONSOLE_LOGS_TOOL_NAME = 'get_lux_console_logs';
+export const LUX_CLEAR_CONSOLE_TOOL_NAME = 'clear_lux_console';
+export const LUX_FOCUS_WINDOW_TOOL_NAME = 'focus_lux_window';
+export const LUX_HIERARCHY_TOOL_NAME = 'get_lux_hierarchy';
+export const LUX_FIND_GAME_OBJECTS_TOOL_NAME = 'find_lux_game_objects';
+export const LUX_SCREENSHOT_TOOL_NAME = 'capture_lux_screenshot';
+export const LUX_PLAY_MODE_TOOL_NAME = 'control_lux_play_mode';
+export const LUX_DYNAMIC_CODE_TOOL_NAME = 'execute_lux_dynamic_code';
+export const LUX_MOUSE_UI_TOOL_NAME = 'simulate_lux_mouse_ui';
+export const LUX_MOUSE_INPUT_TOOL_NAME = 'simulate_lux_mouse_input';
+export const LUX_KEYBOARD_TOOL_NAME = 'simulate_lux_keyboard';
+export const LUX_RECORD_INPUT_TOOL_NAME = 'record_lux_input';
+export const LUX_REPLAY_INPUT_TOOL_NAME = 'replay_lux_input';
+export const LUX_VERSION_TOOL_NAME = 'get_lux_version';
 export const LUX_CONTEXT_COMMAND = 'get_lux_context';
 export const LUX_EXECUTE_SHELL_COMMAND = 'execute_lux_shell';
 export const LUX_EXECUTE_GIT_COMMAND = 'execute_lux_git';
+export const LUX_CONSOLE_LOGS_COMMAND = 'get_lux_console_logs';
+export const LUX_CLEAR_CONSOLE_COMMAND = 'clear_lux_console';
+export const LUX_FOCUS_WINDOW_COMMAND = 'focus_lux_window';
+export const LUX_HIERARCHY_COMMAND = 'get_lux_hierarchy';
+export const LUX_FIND_GAME_OBJECTS_COMMAND = 'find_lux_game_objects';
+export const LUX_SCREENSHOT_COMMAND = 'capture_lux_screenshot';
+export const LUX_PLAY_MODE_COMMAND = 'control_lux_play_mode';
+export const LUX_DYNAMIC_CODE_COMMAND = 'execute_lux_dynamic_code';
+export const LUX_MOUSE_UI_COMMAND = 'simulate_lux_mouse_ui';
+export const LUX_MOUSE_INPUT_COMMAND = 'simulate_lux_mouse_input';
+export const LUX_KEYBOARD_COMMAND = 'simulate_lux_keyboard';
+export const LUX_RECORD_INPUT_COMMAND = 'record_lux_input';
+export const LUX_REPLAY_INPUT_COMMAND = 'replay_lux_input';
 
 const DISCOVERY_FILE_RELATIVE_PATH = path.join('Library', 'UnityAiBridge', 'server.json');
 const TCP_RESPONSE_TIMEOUT_MS = 5_000;
@@ -43,6 +70,8 @@ export interface LuxAutomationRequest {
   actor?: string;
   approvalGranted?: boolean;
 }
+
+export type LuxToolParameters = Record<string, unknown>;
 
 export class UnityTcpContextError extends Error {
   constructor(
@@ -98,7 +127,63 @@ export async function executeLuxGitInUnity(projectRoot: string, parameters: LuxA
   return executeLuxAutomationCommand(projectRoot, LUX_EXECUTE_GIT_COMMAND, parameters);
 }
 
+export async function getLuxConsoleLogsFromUnity(projectRoot: string, parameters: LuxToolParameters): Promise<unknown> {
+  return executeLuxToolCommand(projectRoot, LUX_CONSOLE_LOGS_COMMAND, parameters);
+}
+
+export async function clearLuxConsoleInUnity(projectRoot: string, parameters: LuxToolParameters): Promise<unknown> {
+  return executeLuxToolCommand(projectRoot, LUX_CLEAR_CONSOLE_COMMAND, parameters);
+}
+
+export async function focusLuxWindowInUnity(projectRoot: string): Promise<unknown> {
+  return executeLuxToolCommand(projectRoot, LUX_FOCUS_WINDOW_COMMAND, {});
+}
+
+export async function getLuxHierarchyFromUnity(projectRoot: string, parameters: LuxToolParameters): Promise<unknown> {
+  return executeLuxToolCommand(projectRoot, LUX_HIERARCHY_COMMAND, parameters);
+}
+
+export async function findLuxGameObjectsInUnity(projectRoot: string, parameters: LuxToolParameters): Promise<unknown> {
+  return executeLuxToolCommand(projectRoot, LUX_FIND_GAME_OBJECTS_COMMAND, parameters);
+}
+
+export async function captureLuxScreenshotInUnity(projectRoot: string, parameters: LuxToolParameters): Promise<unknown> {
+  return executeLuxToolCommand(projectRoot, LUX_SCREENSHOT_COMMAND, parameters);
+}
+
+export async function controlLuxPlayModeInUnity(projectRoot: string, parameters: LuxToolParameters): Promise<unknown> {
+  return executeLuxToolCommand(projectRoot, LUX_PLAY_MODE_COMMAND, parameters);
+}
+
+export async function executeLuxDynamicCodeInUnity(projectRoot: string, parameters: LuxToolParameters): Promise<unknown> {
+  return executeLuxToolCommand(projectRoot, LUX_DYNAMIC_CODE_COMMAND, parameters);
+}
+
+export async function simulateLuxMouseUiInUnity(projectRoot: string, parameters: LuxToolParameters): Promise<unknown> {
+  return executeLuxToolCommand(projectRoot, LUX_MOUSE_UI_COMMAND, parameters);
+}
+
+export async function simulateLuxMouseInputInUnity(projectRoot: string, parameters: LuxToolParameters): Promise<unknown> {
+  return executeLuxToolCommand(projectRoot, LUX_MOUSE_INPUT_COMMAND, parameters);
+}
+
+export async function simulateLuxKeyboardInUnity(projectRoot: string, parameters: LuxToolParameters): Promise<unknown> {
+  return executeLuxToolCommand(projectRoot, LUX_KEYBOARD_COMMAND, parameters);
+}
+
+export async function recordLuxInputInUnity(projectRoot: string, parameters: LuxToolParameters): Promise<unknown> {
+  return executeLuxToolCommand(projectRoot, LUX_RECORD_INPUT_COMMAND, parameters);
+}
+
+export async function replayLuxInputInUnity(projectRoot: string, parameters: LuxToolParameters): Promise<unknown> {
+  return executeLuxToolCommand(projectRoot, LUX_REPLAY_INPUT_COMMAND, parameters);
+}
+
 async function executeLuxAutomationCommand(projectRoot: string, command: string, parameters: LuxAutomationRequest): Promise<unknown> {
+  return executeLuxToolCommand(projectRoot, command, { ...parameters });
+}
+
+async function executeLuxToolCommand(projectRoot: string, command: string, parameters: LuxToolParameters): Promise<unknown> {
   const discovery = await readDiscovery(projectRoot);
   const response = await sendUnityCommand(discovery, command, parameters);
 
@@ -159,7 +244,7 @@ async function readDiscovery(projectRoot: string): Promise<UnityBridgeDiscovery>
   return parsedDiscovery;
 }
 
-async function sendUnityCommand(discovery: UnityBridgeDiscovery, command: string, parameters: LuxAutomationRequest | Record<string, never>): Promise<UnityBridgeResponse> {
+async function sendUnityCommand(discovery: UnityBridgeDiscovery, command: string, parameters: LuxToolParameters): Promise<UnityBridgeResponse> {
   const requestLine = `${JSON.stringify({
     schemaVersion: 1,
     requestId: randomUUID(),

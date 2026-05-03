@@ -1,13 +1,15 @@
+mod mcp_server;
 mod protocol;
 mod server;
 
 use std::{
+    collections::BTreeMap,
     fs,
     io::{BufRead, BufReader, ErrorKind, Read, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{bail, Context};
@@ -30,8 +32,10 @@ enum Command {
     Serve(ServeArgs),
     Unity(UnityArgs),
     Skill(SkillArgs),
+    Addon(AddonArgs),
     Compile(CompileArgs),
     Bridge(BridgeArgs),
+    Mcp(McpArgs),
     RunTests(RunTestsArgs),
     Schema,
     /// Generate shell completion scripts
@@ -101,6 +105,50 @@ struct SkillUpdateArgs {
 }
 
 #[derive(Parser, Debug)]
+struct AddonArgs {
+    #[command(subcommand)]
+    action: AddonAction,
+}
+
+#[derive(Subcommand, Debug)]
+enum AddonAction {
+    List(AddonListArgs),
+    Info(AddonInfoArgs),
+    Install(AddonInstallArgs),
+    Remove(AddonRemoveArgs),
+}
+
+#[derive(Parser, Debug)]
+struct AddonListArgs {
+    #[arg(long, default_value_t = false)]
+    json: bool,
+    #[arg(long, default_value_t = false)]
+    available: bool,
+}
+
+#[derive(Parser, Debug)]
+struct AddonInfoArgs {
+    name: String,
+    #[arg(long, default_value_t = false)]
+    json: bool,
+}
+
+#[derive(Parser, Debug)]
+struct AddonInstallArgs {
+    /// Addon name to install
+    name: String,
+}
+
+#[derive(Parser, Debug)]
+struct AddonRemoveArgs {
+    /// Addon name to remove
+    name: String,
+    /// Remove even when installed addons depend on it
+    #[arg(long, default_value_t = false)]
+    force: bool,
+}
+
+#[derive(Parser, Debug)]
 struct UnityArgs {
     #[command(subcommand)]
     command: UnityCommand,
@@ -160,12 +208,26 @@ struct UnityBackendListCommandsArgs {
 struct UnityGetLogsArgs {
     #[arg(long)]
     project_path: Option<PathBuf>,
+    #[arg(long)]
+    log_type: Option<String>,
+    #[arg(long, default_value_t = 100)]
+    max_count: i64,
+    #[arg(long)]
+    search_text: Option<String>,
+    #[arg(long, default_value_t = false)]
+    include_stack_trace: bool,
+    #[arg(long, default_value_t = false)]
+    use_regex: bool,
+    #[arg(long, default_value_t = false)]
+    search_in_stack_trace: bool,
 }
 
 #[derive(Parser, Debug)]
 struct UnityClearConsoleArgs {
     #[arg(long)]
     project_path: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    add_confirmation_message: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -180,6 +242,16 @@ struct UnityLaunchArgs {
     project_path: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_wait: bool,
+    #[arg(short = 'r', long, default_value_t = false)]
+    restart: bool,
+    #[arg(long)]
+    platform: Option<String>,
+    #[arg(long, default_value_t = 3)]
+    max_depth: i64,
+    #[arg(short = 'a', long, default_value_t = false)]
+    add_unity_hub: bool,
+    #[arg(short = 'f', long, default_value_t = false)]
+    favorite: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -211,6 +283,8 @@ struct UnityFindGameObjectsArgs {
     #[arg(long, default_value = "query")]
     search_mode: String,
     #[arg(long)]
+    search_text: Option<String>,
+    #[arg(long)]
     name: Option<String>,
     #[arg(long)]
     regex: Option<String>,
@@ -226,6 +300,8 @@ struct UnityFindGameObjectsArgs {
     active_state: String,
     #[arg(long, default_value_t = 50)]
     inline_limit: i64,
+    #[arg(long, default_value_t = false)]
+    include_inherited_properties: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -238,6 +314,16 @@ struct UnityGetHierarchyArgs {
     root_path: Option<String>,
     #[arg(long, default_value_t = false)]
     use_selection: bool,
+    #[arg(long)]
+    max_depth: Option<i64>,
+    #[arg(long, default_value_t = false)]
+    include_components: bool,
+    #[arg(long, default_value_t = false)]
+    include_inactive: bool,
+    #[arg(long, default_value_t = false)]
+    include_paths: bool,
+    #[arg(long)]
+    use_components_lut: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -260,6 +346,14 @@ struct UnityScreenshotArgs {
     annotate_elements: bool,
     #[arg(long, default_value_t = false)]
     elements_only: bool,
+    #[arg(long)]
+    window_name: Option<String>,
+    #[arg(long)]
+    resolution_scale: Option<f64>,
+    #[arg(long)]
+    match_mode: Option<String>,
+    #[arg(long)]
+    output_directory: Option<PathBuf>,
 }
 
 #[derive(Parser, Debug)]
@@ -286,6 +380,20 @@ struct UnitySimulateMouseUiArgs {
     y: f64,
     #[arg(long, default_value_t = 500)]
     duration_ms: i64,
+    #[arg(long)]
+    from_x: Option<f64>,
+    #[arg(long)]
+    from_y: Option<f64>,
+    #[arg(long)]
+    drag_speed: Option<f64>,
+    #[arg(long)]
+    button: Option<String>,
+    #[arg(long, default_value_t = false)]
+    bypass_raycast: bool,
+    #[arg(long)]
+    target_path: Option<String>,
+    #[arg(long)]
+    drop_target_path: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -316,6 +424,14 @@ struct UnityRecordInputArgs {
     project_path: Option<PathBuf>,
     #[arg(long, value_enum)]
     action: RecordInputAction,
+    #[arg(long)]
+    output_path: Option<PathBuf>,
+    #[arg(long)]
+    keys: Option<String>,
+    #[arg(long)]
+    delay_seconds: Option<i64>,
+    #[arg(long, default_value_t = false)]
+    show_overlay: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -326,6 +442,10 @@ struct UnityReplayInputArgs {
     action: ReplayInputAction,
     #[arg(long)]
     file: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    show_overlay: bool,
+    #[arg(long, default_value_t = false)]
+    r#loop: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -336,6 +456,12 @@ struct UnityExecuteDynamicCodeArgs {
     code: Option<String>,
     #[arg(long)]
     file: Option<PathBuf>,
+    #[arg(long)]
+    parameters: Option<String>,
+    #[arg(long, default_value_t = false)]
+    compile_only: bool,
+    #[arg(long, default_value_t = false)]
+    yield_to_foreground_requests: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -489,6 +615,12 @@ struct BridgeWatchArgs {
 }
 
 #[derive(Parser, Debug)]
+pub(crate) struct McpArgs {
+    #[arg(long)]
+    pub(crate) project_path: Option<PathBuf>,
+}
+
+#[derive(Parser, Debug)]
 struct RunTestsArgs {
     #[arg(long)]
     project_path: Option<PathBuf>,
@@ -514,10 +646,10 @@ struct LuxBridgeSettings {
 }
 
 #[derive(Debug, serde::Deserialize)]
-struct UnityBridgeDiscovery {
-    host: String,
-    port: u16,
-    token: String,
+pub(crate) struct UnityBridgeDiscovery {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) token: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -534,8 +666,10 @@ async fn main() -> anyhow::Result<()> {
         Command::Serve(args) => serve(args).await,
         Command::Unity(args) => run_lux_unity_command(args),
         Command::Skill(args) => run_skill_command(args),
+        Command::Addon(args) => run_addon_command(args),
         Command::Compile(args) => run_batch_compile(args),
         Command::Bridge(args) => run_bridge_command(args),
+        Command::Mcp(args) => mcp_server::run_mcp_server(args),
         Command::RunTests(args) => run_batch_tests(args),
         Command::Schema => {
             println!(
@@ -635,10 +769,7 @@ fn print_skill_list(args: SkillListArgs) -> anyhow::Result<()> {
     for entry in entries {
         println!(
             "{:20} {:10} {:8} {}",
-            entry.manifest.name,
-            entry.manifest.version,
-            entry.scope,
-            entry.manifest.description
+            entry.manifest.name, entry.manifest.version, entry.scope, entry.manifest.description
         );
     }
 
@@ -732,7 +863,11 @@ fn install_skill(args: SkillInstallArgs) -> anyhow::Result<()> {
     let target_dir = target_root.join(&args.name);
 
     if target_dir.exists() {
-        eprintln!("Error: skill '{}' already exists at {}", args.name, target_dir.display());
+        eprintln!(
+            "Error: skill '{}' already exists at {}",
+            args.name,
+            target_dir.display()
+        );
         std::process::exit(1);
     }
 
@@ -795,7 +930,11 @@ fn remove_skill(args: SkillRemoveArgs) -> anyhow::Result<()> {
 
     fs::remove_dir_all(&target_dir)
         .with_context(|| format!("failed to remove skill directory {}", target_dir.display()))?;
-    println!("Removed skill '{}' from {}", args.name, target_dir.display());
+    println!(
+        "Removed skill '{}' from {}",
+        args.name,
+        target_dir.display()
+    );
     Ok(())
 }
 
@@ -865,7 +1004,11 @@ fn install_skill_from_source(source: &str, target_dir: &Path) -> anyhow::Result<
     Ok(())
 }
 
-fn copy_required_skill_file(source_dir: &Path, target_dir: &Path, file_name: &str) -> anyhow::Result<()> {
+fn copy_required_skill_file(
+    source_dir: &Path,
+    target_dir: &Path,
+    file_name: &str,
+) -> anyhow::Result<()> {
     let source_path = source_dir.join(file_name);
     let target_path = target_dir.join(file_name);
     fs::copy(&source_path, &target_path).with_context(|| {
@@ -917,7 +1060,13 @@ fn download_skill_file(
     let url = format!("{}/{}", source.trim_end_matches('/'), file_name);
     let target_path = target_dir.join(file_name);
     let output = ProcessCommand::new("curl")
-        .args(["--fail", "--silent", "--show-error", "--location", "--output"])
+        .args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--output",
+        ])
         .arg(&target_path)
         .arg(&url)
         .output()
@@ -1078,6 +1227,989 @@ fn read_skill_md_preview(directory_path: &Path) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// lux addon
+// ---------------------------------------------------------------------------
+
+#[allow(dead_code)]
+mod lux_addon_legacy {
+    use super::*;
+
+    const DEFAULT_INSTALLED_ADDONS: [&str; 5] = [
+        "webrtc",
+        "codex-image",
+        "pipeline-editor",
+        "unity-git",
+        "multi-ai",
+    ];
+
+    #[derive(Debug, serde::Deserialize, serde::Serialize)]
+    struct AddonManifest {
+        name: String,
+        #[serde(rename = "displayName")]
+        display_name: Option<String>,
+        version: String,
+        description: String,
+        category: Option<String>,
+        #[serde(rename = "defineSymbols", default)]
+        define_symbols: Vec<String>,
+        #[serde(rename = "requiredPackages", default)]
+        required_packages: BTreeMap<String, String>,
+        #[serde(rename = "addonDependencies", default)]
+        addon_dependencies: BTreeMap<String, String>,
+        #[serde(default)]
+        assemblies: Vec<String>,
+        keywords: Option<Vec<String>>,
+    }
+
+    #[derive(Debug, serde::Serialize)]
+    struct AddonEntry {
+        manifest: AddonManifest,
+        directory_path: PathBuf,
+        scope: String,
+        status: String,
+    }
+
+    #[derive(Debug, serde::Deserialize, serde::Serialize)]
+    struct AddonState {
+        version: u32,
+        #[serde(rename = "installedAddons")]
+        installed_addons: Vec<String>,
+        #[serde(rename = "lastUpdated")]
+        last_updated: String,
+    }
+
+    fn run_addon_command(args: AddonArgs) -> anyhow::Result<()> {
+        match args.action {
+            AddonAction::List(list_args) => print_addon_list(list_args),
+            AddonAction::Info(info_args) => print_addon_info(info_args),
+            AddonAction::Install(install_args) => install_addon(install_args),
+            AddonAction::Remove(remove_args) => remove_addon(remove_args),
+        }
+    }
+
+    fn print_addon_list(args: AddonListArgs) -> anyhow::Result<()> {
+        let mut entries = discover_addons()?;
+        if args.available {
+            entries.retain(|entry| entry.status == "available");
+        }
+
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&entries)?);
+            return Ok(());
+        }
+
+        if entries.is_empty() {
+            println!("No addons found");
+            return Ok(());
+        }
+
+        println!("{:20} {:10} {:10} DESCRIPTION", "NAME", "VERSION", "STATUS");
+        for entry in entries {
+            println!(
+                "{:20} {:10} {:10} {}",
+                entry.manifest.name,
+                entry.manifest.version,
+                entry.status,
+                entry.manifest.description
+            );
+        }
+
+        Ok(())
+    }
+
+    fn print_addon_info(args: AddonInfoArgs) -> anyhow::Result<()> {
+        let entries = discover_addons()?;
+        let Some(entry) = entries
+            .iter()
+            .find(|entry| entry.manifest.name == args.name)
+        else {
+            eprintln!("Error: addon '{}' not found", args.name);
+            std::process::exit(1);
+        };
+
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&entry.manifest)?);
+            return Ok(());
+        }
+
+        println!("Name:               {}", entry.manifest.name);
+        println!(
+            "Display Name:       {}",
+            entry.manifest.display_name.as_deref().unwrap_or("N/A")
+        );
+        println!("Version:            {}", entry.manifest.version);
+        println!("Description:        {}", entry.manifest.description);
+        println!(
+            "Category:           {}",
+            entry.manifest.category.as_deref().unwrap_or("N/A")
+        );
+        println!(
+            "Define Symbols:     {}",
+            format_string_list(&entry.manifest.define_symbols)
+        );
+        println!(
+            "Required Packages:  {}",
+            format_string_map(&entry.manifest.required_packages)
+        );
+        println!(
+            "Addon Dependencies: {}",
+            format_string_map(&entry.manifest.addon_dependencies)
+        );
+        println!(
+            "Assemblies:         {}",
+            format_string_list(&entry.manifest.assemblies)
+        );
+        println!("Status:             {}", entry.status);
+        println!("Location:           {}", entry.directory_path.display());
+
+        Ok(())
+    }
+
+    fn install_addon(args: AddonInstallArgs) -> anyhow::Result<()> {
+        let entries = discover_addons()?;
+        let Some(entry) = entries
+            .iter()
+            .find(|entry| entry.manifest.name == args.name)
+        else {
+            eprintln!("Error: addon '{}' not found", args.name);
+            std::process::exit(1);
+        };
+
+        let project_root = addon_project_root()?;
+        let mut state = read_addon_state(&project_root)?;
+
+        if state
+            .installed_addons
+            .iter()
+            .any(|installed| installed == &args.name)
+        {
+            println!("Addon '{}' is already installed", args.name);
+            return Ok(());
+        }
+
+        let missing_dependencies: Vec<String> = entry
+            .manifest
+            .addon_dependencies
+            .keys()
+            .filter(|dependency| {
+                !state
+                    .installed_addons
+                    .iter()
+                    .any(|name| name == *dependency)
+            })
+            .cloned()
+            .collect();
+        if !missing_dependencies.is_empty() {
+            eprintln!(
+                "Error: addon '{}' requires installed addons: {}",
+                args.name,
+                missing_dependencies.join(", ")
+            );
+            std::process::exit(1);
+        }
+
+        warn_missing_unity_packages(&project_root, &entry.manifest.required_packages);
+
+        state.installed_addons.push(args.name.clone());
+        state.installed_addons.sort();
+        state.installed_addons.dedup();
+        state.last_updated = current_utc_timestamp_string();
+        write_addon_state(&project_root, &state)?;
+
+        println!("Installed addon '{}'", args.name);
+        println!(
+        "Next steps: return to Unity and allow scripts to recompile so addon define symbols take effect."
+    );
+        Ok(())
+    }
+
+    fn remove_addon(args: AddonRemoveArgs) -> anyhow::Result<()> {
+        let project_root = addon_project_root()?;
+        let mut state = read_addon_state(&project_root)?;
+
+        if !state
+            .installed_addons
+            .iter()
+            .any(|installed| installed == &args.name)
+        {
+            eprintln!("Error: addon '{}' is not installed", args.name);
+            std::process::exit(1);
+        }
+
+        let entries = discover_addons()?;
+        let dependents: Vec<String> = entries
+            .iter()
+            .filter(|entry| {
+                entry.manifest.addon_dependencies.contains_key(&args.name)
+                    && state
+                        .installed_addons
+                        .iter()
+                        .any(|installed| installed == &entry.manifest.name)
+            })
+            .map(|entry| entry.manifest.name.clone())
+            .collect();
+
+        if !args.force && !dependents.is_empty() {
+            eprintln!(
+                "Error: addon '{}' is required by installed addons: {}",
+                args.name,
+                dependents.join(", ")
+            );
+            eprintln!("Use --force to remove it anyway.");
+            std::process::exit(1);
+        }
+
+        state.installed_addons.retain(|name| name != &args.name);
+        state.last_updated = current_utc_timestamp_string();
+        write_addon_state(&project_root, &state)?;
+
+        println!("Removed addon '{}'", args.name);
+        println!(
+        "Next steps: return to Unity and allow scripts to recompile so addon define symbols are refreshed."
+    );
+        Ok(())
+    }
+
+    fn discover_addons() -> anyhow::Result<Vec<AddonEntry>> {
+        let project_root = addon_project_root().ok();
+        let state = project_root
+            .as_ref()
+            .and_then(|root| read_addon_state(root).ok())
+            .unwrap_or_else(default_addon_state);
+        let mut entries = Vec::new();
+
+        scan_addon_scope(&bundled_addons_dir(), "bundled", &state, &mut entries)?;
+        if let Some(root) = project_root.as_ref() {
+            scan_addon_scope(
+                &root.join(".lux").join("addons"),
+                "project",
+                &state,
+                &mut entries,
+            )?;
+        }
+        if let Some(addons_dir) = global_addons_dir() {
+            scan_addon_scope(&addons_dir, "global", &state, &mut entries)?;
+        }
+
+        entries.sort_by(|left, right| {
+            left.manifest
+                .name
+                .cmp(&right.manifest.name)
+                .then_with(|| left.scope.cmp(&right.scope))
+        });
+        Ok(entries)
+    }
+
+    fn scan_addon_scope(
+        addons_dir: &Path,
+        scope: &str,
+        state: &AddonState,
+        entries: &mut Vec<AddonEntry>,
+    ) -> anyhow::Result<()> {
+        let read_dir = match fs::read_dir(addons_dir) {
+            Ok(read_dir) => read_dir,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to read addons directory {}", addons_dir.display())
+                })
+            }
+        };
+
+        for dir_entry in read_dir {
+            let dir_entry = match dir_entry {
+                Ok(dir_entry) => dir_entry,
+                Err(error) => {
+                    eprintln!("Warning: failed to read addon directory entry: {error}");
+                    continue;
+                }
+            };
+            let directory_path = dir_entry.path();
+            if !directory_path.is_dir() {
+                continue;
+            }
+
+            let manifest_path = directory_path.join("addon.json");
+            let manifest_json = match fs::read_to_string(&manifest_path) {
+                Ok(manifest_json) => manifest_json,
+                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                Err(error) => {
+                    eprintln!(
+                        "Warning: failed to read {}: {error}",
+                        manifest_path.display()
+                    );
+                    continue;
+                }
+            };
+
+            let manifest = match serde_json::from_str::<AddonManifest>(&manifest_json) {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    eprintln!(
+                        "Warning: failed to parse {}: {error}",
+                        manifest_path.display()
+                    );
+                    continue;
+                }
+            };
+            let status = if state
+                .installed_addons
+                .iter()
+                .any(|installed| installed == &manifest.name)
+            {
+                "installed"
+            } else {
+                "available"
+            };
+
+            entries.push(AddonEntry {
+                manifest,
+                directory_path,
+                scope: scope.to_string(),
+                status: status.to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
+    fn bundled_addons_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../Addons")
+    }
+
+    fn global_addons_dir() -> Option<PathBuf> {
+        let home = if cfg!(windows) {
+            std::env::var("USERPROFILE").ok()
+        } else {
+            std::env::var("HOME").ok()
+        };
+        home.map(|h| PathBuf::from(h).join(".lux").join("addons"))
+    }
+
+    fn addon_project_root() -> anyhow::Result<PathBuf> {
+        let current_dir = std::env::current_dir()?;
+        find_unity_project_root(current_dir.clone())
+            .or_else(|| current_dir.parent().map(Path::to_path_buf))
+            .context(
+                "Unity project not found. Run lux addon from a Unity project or package checkout.",
+            )
+    }
+
+    fn addon_state_path(project_root: &Path) -> PathBuf {
+        project_root
+            .join("Library")
+            .join("Lux")
+            .join("addon-state.json")
+    }
+
+    fn default_addon_state() -> AddonState {
+        AddonState {
+            version: 1,
+            installed_addons: DEFAULT_INSTALLED_ADDONS
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
+            last_updated: "2026-05-03T00:00:00Z".to_string(),
+        }
+    }
+
+    fn read_addon_state(project_root: &Path) -> anyhow::Result<AddonState> {
+        let state_path = addon_state_path(project_root);
+        let state_json = match fs::read_to_string(&state_path) {
+            Ok(state_json) => state_json,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(default_addon_state()),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to read {}", state_path.display()))
+            }
+        };
+
+        serde_json::from_str(&state_json)
+            .with_context(|| format!("failed to parse {}", state_path.display()))
+    }
+
+    fn write_addon_state(project_root: &Path, state: &AddonState) -> anyhow::Result<()> {
+        let state_path = addon_state_path(project_root);
+        if let Some(parent) = state_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create directory {}", parent.display()))?;
+        }
+        fs::write(&state_path, serde_json::to_string_pretty(state)?)
+            .with_context(|| format!("failed to write addon state file {}", state_path.display()))
+    }
+
+    fn warn_missing_unity_packages(
+        project_root: &Path,
+        required_packages: &BTreeMap<String, String>,
+    ) {
+        if required_packages.is_empty() {
+            return;
+        }
+
+        let manifest_path = project_root.join("Packages").join("manifest.json");
+        let manifest_json = match fs::read_to_string(&manifest_path) {
+            Ok(manifest_json) => manifest_json,
+            Err(_) => {
+                eprintln!(
+                    "Warning: could not read {}; required Unity packages were not validated",
+                    manifest_path.display()
+                );
+                return;
+            }
+        };
+        let manifest: Value = match serde_json::from_str(&manifest_json) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                eprintln!(
+                    "Warning: failed to parse {}: {error}",
+                    manifest_path.display()
+                );
+                return;
+            }
+        };
+        let dependencies = manifest.get("dependencies").and_then(Value::as_object);
+
+        for (package_name, required_version) in required_packages {
+            if dependencies
+                .and_then(|dependencies| dependencies.get(package_name))
+                .is_none()
+            {
+                eprintln!(
+                "Warning: required Unity package '{}' ({}) is not listed in Packages/manifest.json",
+                package_name, required_version
+            );
+            }
+        }
+    }
+
+    fn format_string_list(values: &[String]) -> String {
+        if values.is_empty() {
+            "N/A".to_string()
+        } else {
+            values.join(", ")
+        }
+    }
+
+    fn format_string_map(values: &BTreeMap<String, String>) -> String {
+        if values.is_empty() {
+            "N/A".to_string()
+        } else {
+            values
+                .iter()
+                .map(|(key, value)| format!("{key}: {value}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    }
+
+    fn current_utc_timestamp_string() -> String {
+        let seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        format_unix_timestamp_utc(seconds)
+    }
+
+    fn format_unix_timestamp_utc(seconds: i64) -> String {
+        let days = seconds.div_euclid(86_400);
+        let seconds_of_day = seconds.rem_euclid(86_400);
+        let (year, month, day) = civil_from_days(days);
+        let hour = seconds_of_day / 3_600;
+        let minute = (seconds_of_day % 3_600) / 60;
+        let second = seconds_of_day % 60;
+        format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+    }
+
+    fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
+        let days = days_since_epoch + 719_468;
+        let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+        let day_of_era = days - era * 146_097;
+        let year_of_era =
+            (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+        let mut year = year_of_era + era * 400;
+        let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+        let month_prime = (5 * day_of_year + 2) / 153;
+        let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+        let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+        year += if month <= 2 { 1 } else { 0 };
+        (year, month, day)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// lux addon
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct AddonManifest {
+    name: String,
+    #[serde(rename = "displayName")]
+    display_name: Option<String>,
+    version: String,
+    description: String,
+    category: Option<String>,
+    #[serde(rename = "defineSymbols", default)]
+    define_symbols: Vec<String>,
+    #[serde(rename = "requiredPackages", default)]
+    required_packages: BTreeMap<String, String>,
+    #[serde(rename = "addonDependencies", default)]
+    addon_dependencies: BTreeMap<String, String>,
+    #[serde(default)]
+    assemblies: Vec<String>,
+    #[serde(default)]
+    keywords: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct AddonEntry {
+    manifest: AddonManifest,
+    directory_path: PathBuf,
+    scope: String,
+    status: String,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct AddonState {
+    version: u32,
+    #[serde(rename = "installedAddons")]
+    installed_addons: Vec<String>,
+    #[serde(rename = "lastUpdated")]
+    last_updated: String,
+}
+
+fn run_addon_command(args: AddonArgs) -> anyhow::Result<()> {
+    match args.action {
+        AddonAction::List(list_args) => print_addon_list(list_args),
+        AddonAction::Info(info_args) => print_addon_info(info_args),
+        AddonAction::Install(install_args) => install_addon(install_args),
+        AddonAction::Remove(remove_args) => remove_addon(remove_args),
+    }
+}
+
+fn print_addon_list(args: AddonListArgs) -> anyhow::Result<()> {
+    let entries = discover_addons()?;
+    let entries: Vec<_> = entries
+        .into_iter()
+        .filter(|entry| !args.available || entry.status == "available")
+        .collect();
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+        return Ok(());
+    }
+
+    if entries.is_empty() {
+        println!("No addons found");
+        return Ok(());
+    }
+
+    println!("{:20} {:10} {:10} DESCRIPTION", "NAME", "VERSION", "STATUS");
+    for entry in entries {
+        println!(
+            "{:20} {:10} {:10} {}",
+            entry.manifest.name, entry.manifest.version, entry.status, entry.manifest.description
+        );
+    }
+
+    Ok(())
+}
+
+fn print_addon_info(args: AddonInfoArgs) -> anyhow::Result<()> {
+    let entries = discover_addons()?;
+    let Some(entry) = entries
+        .iter()
+        .find(|entry| entry.manifest.name == args.name)
+    else {
+        eprintln!("Error: addon '{}' not found", args.name);
+        std::process::exit(1);
+    };
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&entry.manifest)?);
+        return Ok(());
+    }
+
+    println!("Name:               {}", entry.manifest.name);
+    println!(
+        "Display Name:       {}",
+        entry.manifest.display_name.as_deref().unwrap_or("N/A")
+    );
+    println!("Version:            {}", entry.manifest.version);
+    println!("Description:        {}", entry.manifest.description);
+    println!(
+        "Category:           {}",
+        entry.manifest.category.as_deref().unwrap_or("N/A")
+    );
+    println!(
+        "Define Symbols:     {}",
+        format_string_list(&entry.manifest.define_symbols)
+    );
+    println!(
+        "Required Packages:  {}",
+        format_string_map(&entry.manifest.required_packages)
+    );
+    println!(
+        "Addon Dependencies: {}",
+        format_string_map(&entry.manifest.addon_dependencies)
+    );
+    println!(
+        "Assemblies:         {}",
+        format_string_list(&entry.manifest.assemblies)
+    );
+    println!("Status:             {}", entry.status);
+    println!("Location:           {}", entry.directory_path.display());
+
+    Ok(())
+}
+
+fn install_addon(args: AddonInstallArgs) -> anyhow::Result<()> {
+    let entries = discover_addons()?;
+    let Some(entry) = entries
+        .iter()
+        .find(|entry| entry.manifest.name == args.name)
+    else {
+        eprintln!("Error: addon '{}' not found", args.name);
+        std::process::exit(1);
+    };
+
+    let project_root = project_root_dir()?;
+    let mut state = read_addon_state(&project_root)?;
+    if state.installed_addons.iter().any(|name| name == &args.name) {
+        println!("Addon '{}' is already installed", args.name);
+        return Ok(());
+    }
+
+    let missing_dependencies: Vec<_> = entry
+        .manifest
+        .addon_dependencies
+        .keys()
+        .filter(|name| {
+            !state
+                .installed_addons
+                .iter()
+                .any(|installed| installed == *name)
+        })
+        .cloned()
+        .collect();
+    if !missing_dependencies.is_empty() {
+        eprintln!(
+            "Error: addon '{}' requires installed addon(s): {}",
+            args.name,
+            missing_dependencies.join(", ")
+        );
+        std::process::exit(1);
+    }
+
+    warn_missing_unity_packages(&project_root, &entry.manifest.required_packages)?;
+
+    state.installed_addons.push(args.name.clone());
+    state.installed_addons.sort();
+    state.installed_addons.dedup();
+    write_addon_state(&project_root, &state)?;
+
+    println!("Installed addon '{}'", args.name);
+    println!("Next steps: return to Unity and allow scripts to recompile.");
+    Ok(())
+}
+
+fn remove_addon(args: AddonRemoveArgs) -> anyhow::Result<()> {
+    let entries = discover_addons()?;
+    let project_root = project_root_dir()?;
+    let mut state = read_addon_state(&project_root)?;
+    if !state.installed_addons.iter().any(|name| name == &args.name) {
+        println!("Addon '{}' is not installed", args.name);
+        return Ok(());
+    }
+
+    let dependents: Vec<_> = entries
+        .iter()
+        .filter(|entry| {
+            state
+                .installed_addons
+                .iter()
+                .any(|name| name == &entry.manifest.name)
+        })
+        .filter(|entry| entry.manifest.addon_dependencies.contains_key(&args.name))
+        .map(|entry| entry.manifest.name.clone())
+        .collect();
+    if !args.force && !dependents.is_empty() {
+        eprintln!(
+            "Error: addon '{}' is required by installed addon(s): {}",
+            args.name,
+            dependents.join(", ")
+        );
+        eprintln!("Use --force to remove it anyway.");
+        std::process::exit(1);
+    }
+
+    state.installed_addons.retain(|name| name != &args.name);
+    write_addon_state(&project_root, &state)?;
+
+    println!("Removed addon '{}'", args.name);
+    println!("Next steps: return to Unity and allow scripts to recompile.");
+    Ok(())
+}
+
+fn discover_addons() -> anyhow::Result<Vec<AddonEntry>> {
+    let state = read_addon_state(&project_root_dir()?)?;
+    let mut entries = Vec::new();
+
+    scan_addon_scope(&package_addons_dir(), "bundled", &state, &mut entries)?;
+    if let Some(addons_dir) = project_addons_dir() {
+        scan_addon_scope(&addons_dir, "project", &state, &mut entries)?;
+    }
+    if let Some(addons_dir) = global_addons_dir() {
+        scan_addon_scope(&addons_dir, "global", &state, &mut entries)?;
+    }
+
+    entries.sort_by(|left, right| left.manifest.name.cmp(&right.manifest.name));
+    Ok(entries)
+}
+
+fn scan_addon_scope(
+    addons_dir: &Path,
+    scope: &str,
+    state: &AddonState,
+    entries: &mut Vec<AddonEntry>,
+) -> anyhow::Result<()> {
+    let read_dir = match fs::read_dir(addons_dir) {
+        Ok(read_dir) => read_dir,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to read addons directory {}", addons_dir.display())
+            })
+        }
+    };
+
+    for dir_entry in read_dir {
+        let dir_entry = match dir_entry {
+            Ok(dir_entry) => dir_entry,
+            Err(error) => {
+                eprintln!("Warning: failed to read addon directory entry: {error}");
+                continue;
+            }
+        };
+        let directory_path = dir_entry.path();
+        if !directory_path.is_dir() {
+            continue;
+        }
+
+        let manifest_path = directory_path.join("addon.json");
+        let manifest_json = match fs::read_to_string(&manifest_path) {
+            Ok(manifest_json) => manifest_json,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => {
+                eprintln!(
+                    "Warning: failed to read {}: {error}",
+                    manifest_path.display()
+                );
+                continue;
+            }
+        };
+
+        let manifest = match serde_json::from_str::<AddonManifest>(&manifest_json) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                eprintln!(
+                    "Warning: failed to parse {}: {error}",
+                    manifest_path.display()
+                );
+                continue;
+            }
+        };
+
+        if entries
+            .iter()
+            .any(|entry| entry.manifest.name == manifest.name)
+        {
+            continue;
+        }
+
+        let status = if state
+            .installed_addons
+            .iter()
+            .any(|name| name == &manifest.name)
+        {
+            "installed"
+        } else {
+            "available"
+        };
+
+        entries.push(AddonEntry {
+            manifest,
+            directory_path,
+            scope: scope.to_string(),
+            status: status.to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn read_addon_state(project_root: &Path) -> anyhow::Result<AddonState> {
+    let state_path = addon_state_path(project_root);
+    let state_json = match fs::read_to_string(&state_path) {
+        Ok(state_json) => state_json,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(default_addon_state()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", state_path.display()))
+        }
+    };
+    serde_json::from_str(&state_json)
+        .with_context(|| format!("failed to parse {}", state_path.display()))
+}
+
+fn write_addon_state(project_root: &Path, state: &AddonState) -> anyhow::Result<()> {
+    let state_path = addon_state_path(project_root);
+    if let Some(parent) = state_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    let updated_state = AddonState {
+        version: state.version,
+        installed_addons: state.installed_addons.clone(),
+        last_updated: current_timestamp_utc(),
+    };
+    fs::write(&state_path, serde_json::to_string_pretty(&updated_state)?)
+        .with_context(|| format!("failed to write {}", state_path.display()))?;
+    Ok(())
+}
+
+fn default_addon_state() -> AddonState {
+    AddonState {
+        version: 1,
+        installed_addons: vec![
+            "webrtc".to_string(),
+            "codex-image".to_string(),
+            "pipeline-editor".to_string(),
+            "unity-git".to_string(),
+            "multi-ai".to_string(),
+        ],
+        last_updated: "2026-05-03T00:00:00Z".to_string(),
+    }
+}
+
+fn warn_missing_unity_packages(
+    project_root: &Path,
+    required_packages: &BTreeMap<String, String>,
+) -> anyhow::Result<()> {
+    if required_packages.is_empty() {
+        return Ok(());
+    }
+
+    let manifest_path = project_root.join("Packages").join("manifest.json");
+    let manifest_json = match fs::read_to_string(&manifest_path) {
+        Ok(manifest_json) => manifest_json,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            for package_name in required_packages.keys() {
+                eprintln!("Warning: required Unity package '{package_name}' could not be verified");
+            }
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to read {}", manifest_path.display()))
+        }
+    };
+    let manifest: Value = serde_json::from_str(&manifest_json)
+        .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+    let dependencies = manifest.get("dependencies").and_then(Value::as_object);
+    for package_name in required_packages.keys() {
+        if dependencies
+            .and_then(|dependencies| dependencies.get(package_name))
+            .is_none()
+        {
+            eprintln!("Warning: required Unity package '{package_name}' is not listed in Packages/manifest.json");
+        }
+    }
+    Ok(())
+}
+
+fn package_addons_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../Addons")
+}
+
+fn project_addons_dir() -> Option<PathBuf> {
+    std::env::current_dir()
+        .ok()
+        .map(|d| d.join(".lux").join("addons"))
+}
+
+fn global_addons_dir() -> Option<PathBuf> {
+    let home = if cfg!(windows) {
+        std::env::var("USERPROFILE").ok()
+    } else {
+        std::env::var("HOME").ok()
+    };
+    home.map(|h| PathBuf::from(h).join(".lux").join("addons"))
+}
+
+fn project_root_dir() -> anyhow::Result<PathBuf> {
+    std::env::current_dir().context("failed to determine current directory")
+}
+
+fn addon_state_path(project_root: &Path) -> PathBuf {
+    project_root
+        .join("Library")
+        .join("Lux")
+        .join("addon-state.json")
+}
+
+fn format_string_list(values: &[String]) -> String {
+    if values.is_empty() {
+        "N/A".to_string()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn format_string_map(values: &BTreeMap<String, String>) -> String {
+    if values.is_empty() {
+        return "N/A".to_string();
+    }
+
+    values
+        .iter()
+        .map(|(key, value)| format!("{key}@{value}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn current_timestamp_utc() -> String {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    format_unix_timestamp_utc(seconds)
+}
+
+fn format_unix_timestamp_utc(seconds: i64) -> String {
+    let days = seconds.div_euclid(86_400);
+    let seconds_of_day = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if month <= 2 { 1 } else { 0 };
+    (year, month as u32, day as u32)
+}
+
+// ---------------------------------------------------------------------------
 // lux unity status
 // ---------------------------------------------------------------------------
 
@@ -1146,8 +2278,17 @@ fn run_lux_create_objects(args: UnityCreateObjectsArgs) -> anyhow::Result<()> {
 }
 
 fn run_lux_unity_launch(args: UnityLaunchArgs) -> anyhow::Result<()> {
-    let project_root = resolve_project_root(&args.project_path)?;
+    let project_root = resolve_project_root_with_max_depth(&args.project_path, args.max_depth)?;
     let launch_target = resolve_unity_launch_target(&project_root)?;
+    let launch_params = json!({
+        "restart": args.restart,
+        "platform": args.platform,
+        "maxDepth": args.max_depth,
+        "addUnityHub": args.add_unity_hub,
+        "favorite": args.favorite,
+        "noWait": args.no_wait,
+        "projectPath": project_root.to_string_lossy().to_string(),
+    });
 
     eprintln!(
         "Lux launch: launching Unity editor for {}",
@@ -1158,6 +2299,10 @@ fn run_lux_unity_launch(args: UnityLaunchArgs) -> anyhow::Result<()> {
         .args(&launch_target.prefix_args)
         .arg("-projectPath")
         .arg(&project_root)
+        .env(
+            "LUX_UNITY_LAUNCH_PARAMS",
+            serde_json::to_string(&launch_params)?,
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -1179,21 +2324,26 @@ fn run_lux_unity_launch(args: UnityLaunchArgs) -> anyhow::Result<()> {
 fn print_lux_backend_find_game_objects(args: UnityFindGameObjectsArgs) -> anyhow::Result<()> {
     let project_root = resolve_project_root(&args.project_path)?;
     let discovery = read_unity_bridge_discovery(&project_root)?;
+    let search_text = args.search_text.clone().or_else(|| args.name.clone());
     let request = json!({
         "schemaVersion": 1,
         "requestId": uuid::Uuid::new_v4().to_string(),
         "command": "find_lux_game_objects",
         "token": discovery.token,
         "params": {
-            "searchMode": args.search_mode,
-            "name": args.name,
-            "regex": args.regex,
-            "path": args.path,
-            "component": args.component,
-            "tag": args.tag,
-            "layer": args.layer,
-            "activeState": args.active_state,
+            "findSearchMode": args.search_mode.clone(),
+            "findSearchText": search_text,
+            "findInlineLimit": args.inline_limit,
+            "searchMode": args.search_mode.clone(),
+            "name": args.name.clone(),
+            "regex": args.regex.clone(),
+            "path": args.path.clone(),
+            "component": args.component.clone(),
+            "tag": args.tag.clone(),
+            "layer": args.layer.clone(),
+            "activeState": args.active_state.clone(),
             "inlineLimit": args.inline_limit,
+            "includeInheritedProperties": args.include_inherited_properties,
         }
     });
     let response_line = send_unity_tcp_line(
@@ -1208,7 +2358,11 @@ fn print_lux_backend_find_game_objects(args: UnityFindGameObjectsArgs) -> anyhow
             response_json
         );
     }
-    println!("{}", serde_json::to_string_pretty(&response_json)?);
+    let payload = response_json
+        .get("payload")
+        .and_then(|payload| payload.get("findGameObjectsResult"))
+        .context("Unity TCP response did not include payload.findGameObjectsResult")?;
+    println!("{}", serde_json::to_string_pretty(payload)?);
     Ok(())
 }
 
@@ -1230,6 +2384,11 @@ fn print_lux_backend_get_hierarchy(args: UnityGetHierarchyArgs) -> anyhow::Resul
             "hierarchyAll": args.all || filter_count == 0,
             "hierarchyRootPath": args.root_path,
             "hierarchyUseSelection": args.use_selection,
+            "maxDepth": args.max_depth,
+            "includeComponents": args.include_components,
+            "includeInactive": args.include_inactive,
+            "includePaths": args.include_paths,
+            "useComponentsLut": args.use_components_lut,
         }
     });
     let response_line = send_unity_tcp_line(
@@ -1304,6 +2463,10 @@ fn print_lux_backend_screenshot(args: UnityScreenshotArgs) -> anyhow::Result<()>
             "screenshotCaptureMode": args.capture_mode,
             "screenshotAnnotateElements": args.annotate_elements,
             "screenshotElementsOnly": args.elements_only,
+            "windowName": args.window_name,
+            "resolutionScale": args.resolution_scale,
+            "matchMode": args.match_mode,
+            "outputDirectory": args.output_directory.as_ref().map(|path| path.to_string_lossy().to_string()),
             "actor": "lux-cli"
         }
     });
@@ -1421,6 +2584,10 @@ fn print_lux_backend_record_input(args: UnityRecordInputArgs) -> anyhow::Result<
         "record_lux_input",
         json!({
             "inputAction": args.action.as_str(),
+            "outputPath": args.output_path.as_ref().map(|path| path.to_string_lossy().to_string()),
+            "keys": args.keys,
+            "delaySeconds": args.delay_seconds,
+            "showOverlay": args.show_overlay,
             "actor": "lux-cli"
         }),
     )?;
@@ -1439,6 +2606,8 @@ fn print_lux_backend_replay_input(args: UnityReplayInputArgs) -> anyhow::Result<
         json!({
             "inputAction": args.action.as_str(),
             "inputFilePath": args.file.as_ref().map(|path| path.to_string_lossy().to_string()),
+            "showOverlay": args.show_overlay,
+            "loop": args.r#loop,
             "actor": "lux-cli"
         }),
     )?;
@@ -1455,6 +2624,13 @@ fn print_lux_backend_simulate_mouse_ui(args: UnitySimulateMouseUiArgs) -> anyhow
             "mouseUiX": args.x,
             "mouseUiY": args.y,
             "mouseUiDurationMs": args.duration_ms,
+            "fromX": args.from_x,
+            "fromY": args.from_y,
+            "dragSpeed": args.drag_speed,
+            "button": args.button,
+            "bypassRaycast": args.bypass_raycast,
+            "targetPath": args.target_path,
+            "dropTargetPath": args.drop_target_path,
             "actor": "lux-cli"
         }),
     )?;
@@ -1628,6 +2804,9 @@ fn print_lux_backend_execute_dynamic_code(args: UnityExecuteDynamicCodeArgs) -> 
         "token": discovery.token,
         "params": {
             "dynamicCode": code,
+            "parameters": args.parameters,
+            "compileOnly": args.compile_only,
+            "yieldToForegroundRequests": args.yield_to_foreground_requests,
             "actor": "lux-cli"
         }
     });
@@ -1700,8 +2879,16 @@ fn print_lux_backend_control_play_mode(args: UnityControlPlayModeArgs) -> anyhow
 
     if args.wait && requested_action != "status" {
         let deadline = Instant::now() + Duration::from_secs(15);
+        let mut last_wait_error: Option<String> = None;
         while !play_mode_state_matches(&state, requested_action) {
             if Instant::now() >= deadline {
+                if let Some(error) = last_wait_error {
+                    bail!(
+                        "timed out waiting for PlayMode action {requested_action}; last state: {}; last transient error: {error}",
+                        serde_json::to_string(&state)?
+                    );
+                }
+
                 bail!(
                     "timed out waiting for PlayMode action {requested_action}; last state: {}",
                     serde_json::to_string(&state)?
@@ -1709,8 +2896,18 @@ fn print_lux_backend_control_play_mode(args: UnityControlPlayModeArgs) -> anyhow
             }
 
             std::thread::sleep(Duration::from_millis(250));
-            let poll_response = fetch_lux_backend_play_mode_state(&project_root, "status")?;
-            state = extract_lux_play_mode_state(&poll_response, requested_action)?;
+            match fetch_lux_backend_play_mode_state(&project_root, "status") {
+                Ok(poll_response) => {
+                    state = extract_lux_play_mode_state(&poll_response, requested_action)?;
+                    last_wait_error = None;
+                }
+                Err(error)
+                    if is_transient_play_mode_wait_error(&error) && Instant::now() < deadline =>
+                {
+                    last_wait_error = Some(error.to_string());
+                }
+                Err(error) => return Err(error),
+            }
         }
     }
 
@@ -1809,6 +3006,36 @@ fn play_mode_state_matches(state: &Value, action: &str) -> bool {
     }
 }
 
+fn is_transient_play_mode_wait_error(error: &anyhow::Error) -> bool {
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .map(is_transient_play_mode_wait_io_error)
+            .unwrap_or(false)
+    }) {
+        return true;
+    }
+
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("unity tcp connection closed before sending a response")
+        || message.contains("unity tcp connection closed while writing request")
+}
+
+fn is_transient_play_mode_wait_io_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        ErrorKind::ConnectionRefused
+            | ErrorKind::ConnectionReset
+            | ErrorKind::BrokenPipe
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::UnexpectedEof
+            | ErrorKind::NotConnected
+            | ErrorKind::WouldBlock
+            | ErrorKind::Interrupted
+            | ErrorKind::TimedOut
+    )
+}
+
 fn print_lux_backend_status(args: UnityBackendStatusArgs) -> anyhow::Result<()> {
     let project_root = resolve_project_root(&args.project_path)?;
     let discovery_path = project_root.join("Library/UnityAiBridge/server.json");
@@ -1828,19 +3055,30 @@ fn print_lux_backend_status(args: UnityBackendStatusArgs) -> anyhow::Result<()> 
         }
     };
 
-    let ping = json!({
+    let request = json!({
         "schemaVersion": 1,
         "requestId": uuid::Uuid::new_v4().to_string(),
-        "command": "ping",
+        "command": "get_backend_status",
         "token": discovery.token,
         "params": {}
     });
-    let ping_result =
-        send_unity_tcp_line(&discovery, &format!("{}\n", serde_json::to_string(&ping)?));
-    match ping_result {
+    let status_result = send_unity_tcp_line(
+        &discovery,
+        &format!("{}\n", serde_json::to_string(&request)?),
+    );
+    match status_result {
         Ok(response_line) => {
             let response_json: Value = serde_json::from_str(&response_line)
                 .unwrap_or_else(|_| json!({ "raw": response_line }));
+            if response_json.get("ok").and_then(Value::as_bool) == Some(true) {
+                if let Some(backend_status) = response_json
+                    .get("payload")
+                    .and_then(|payload| payload.get("backendStatus"))
+                {
+                    println!("{}", serde_json::to_string_pretty(backend_status)?);
+                    return Ok(());
+                }
+            }
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
@@ -1919,7 +3157,18 @@ fn print_lux_backend_command_list(args: UnityBackendListCommandsArgs) -> anyhow:
 
 fn print_lux_backend_console_logs(args: UnityGetLogsArgs) -> anyhow::Result<()> {
     let project_root = resolve_project_root(&args.project_path)?;
-    let response_json = fetch_lux_backend_command_response(&project_root, "get_lux_console_logs")?;
+    let response_json = fetch_lux_backend_command_response_with_params(
+        &project_root,
+        "get_lux_console_logs",
+        json!({
+            "logType": args.log_type,
+            "maxCount": args.max_count,
+            "searchText": args.search_text,
+            "includeStackTrace": args.include_stack_trace,
+            "useRegex": args.use_regex,
+            "searchInStackTrace": args.search_in_stack_trace,
+        }),
+    )?;
     let payload = response_json
         .get("payload")
         .and_then(|payload| payload.get("consoleLogs"))
@@ -1962,7 +3211,13 @@ fn print_lux_backend_console_logs(args: UnityGetLogsArgs) -> anyhow::Result<()> 
 
 fn clear_lux_backend_clear_console(args: UnityClearConsoleArgs) -> anyhow::Result<()> {
     let project_root = resolve_project_root(&args.project_path)?;
-    let response_json = fetch_lux_backend_command_response(&project_root, "clear_lux_console")?;
+    let response_json = fetch_lux_backend_command_response_with_params(
+        &project_root,
+        "clear_lux_console",
+        json!({
+            "addConfirmationMessage": args.add_confirmation_message,
+        }),
+    )?;
     let payload = response_json
         .get("payload")
         .and_then(|payload| payload.get("consoleClearResult"))
@@ -2036,13 +3291,21 @@ fn fetch_lux_backend_protocol_info(project_root: &Path) -> anyhow::Result<Value>
 }
 
 fn fetch_lux_backend_command_response(project_root: &Path, command: &str) -> anyhow::Result<Value> {
+    fetch_lux_backend_command_response_with_params(project_root, command, json!({}))
+}
+
+fn fetch_lux_backend_command_response_with_params(
+    project_root: &Path,
+    command: &str,
+    params: Value,
+) -> anyhow::Result<Value> {
     let discovery = read_unity_bridge_discovery(project_root)?;
     let request = json!({
         "schemaVersion": 1,
         "requestId": uuid::Uuid::new_v4().to_string(),
         "command": command,
         "token": discovery.token,
-        "params": {}
+        "params": params
     });
     let response_line = send_unity_tcp_line(
         &discovery,
@@ -2198,6 +3461,8 @@ fn run_lux_backend_object_command(
         "token": discovery.token,
         "params": {
             "scenePath": scene_path,
+            "createObjectsScenePath": scene_path,
+            "createObjectsCount": object_count,
             "sceneSmokeObjectCount": object_count,
             "actor": "lux-cli"
         }
@@ -2237,7 +3502,9 @@ fn run_lux_backend_object_command(
     }
 }
 
-fn read_unity_bridge_discovery(project_root: &Path) -> anyhow::Result<UnityBridgeDiscovery> {
+pub(crate) fn read_unity_bridge_discovery(
+    project_root: &Path,
+) -> anyhow::Result<UnityBridgeDiscovery> {
     let discovery_path = project_root.join("Library/UnityAiBridge/server.json");
     let text = fs::read_to_string(&discovery_path).with_context(|| {
         format!(
@@ -2253,7 +3520,7 @@ fn read_unity_bridge_discovery(project_root: &Path) -> anyhow::Result<UnityBridg
     })
 }
 
-fn send_unity_tcp_line(
+pub(crate) fn send_unity_tcp_line(
     discovery: &UnityBridgeDiscovery,
     request_line: &str,
 ) -> anyhow::Result<String> {
@@ -2321,7 +3588,7 @@ fn wait_for_unity_bridge_ready(project_root: &Path, timeout: Duration) -> anyhow
     }
 }
 
-fn send_unity_tcp_line_with_timeout(
+pub(crate) fn send_unity_tcp_line_with_timeout(
     discovery: &UnityBridgeDiscovery,
     request_line: &str,
     timeout: Duration,
@@ -2332,7 +3599,7 @@ fn send_unity_tcp_line_with_timeout(
     stream.set_write_timeout(Some(Duration::from_millis(250)))?;
     write_unity_tcp_with_retry(&mut stream, request_line.as_bytes(), deadline)?;
 
-    let mut buffer = String::new();
+    let mut buffer = Vec::new();
     let mut chunk = [0_u8; 1024];
     loop {
         let size = match stream.read(&mut chunk) {
@@ -2346,11 +3613,10 @@ fn send_unity_tcp_line_with_timeout(
         if size == 0 {
             break;
         }
-        buffer.push_str(
-            std::str::from_utf8(&chunk[..size]).context("Unity TCP response was not UTF-8")?,
-        );
-        if let Some(index) = buffer.find('\n') {
-            return Ok(buffer[..index].to_string());
+        buffer.extend_from_slice(&chunk[..size]);
+        if let Some(index) = buffer.iter().position(|byte| *byte == b'\n') {
+            return String::from_utf8(buffer[..index].to_vec())
+                .context("Unity TCP response was not UTF-8");
         }
 
         if Instant::now() >= deadline {
@@ -2413,7 +3679,7 @@ fn watch_unity_bridge_events(args: BridgeWatchArgs) -> anyhow::Result<()> {
     }
 }
 
-fn connect_unity_tcp_with_retry(
+pub(crate) fn connect_unity_tcp_with_retry(
     discovery: &UnityBridgeDiscovery,
     deadline: Instant,
 ) -> anyhow::Result<std::net::TcpStream> {
@@ -2435,7 +3701,7 @@ fn connect_unity_tcp_with_retry(
     }
 }
 
-fn write_unity_tcp_with_retry(
+pub(crate) fn write_unity_tcp_with_retry(
     stream: &mut std::net::TcpStream,
     mut bytes: &[u8],
     deadline: Instant,
@@ -2573,6 +3839,110 @@ fn print_lux_unity_status(args: UnityStatusArgs) -> anyhow::Result<()> {
 
 fn run_batch_compile(args: CompileArgs) -> anyhow::Result<()> {
     let project_root = resolve_project_root(&args.project_path)?;
+
+    if let Ok(discovery) = read_unity_bridge_discovery(&project_root) {
+        // Try dedicated compile command first
+        let request = json!({
+            "schemaVersion": 1,
+            "requestId": uuid::Uuid::new_v4().to_string(),
+            "command": "compile_lux_project",
+            "token": discovery.token,
+            "params": {}
+        });
+        match send_unity_tcp_line(
+            &discovery,
+            &format!("{}\n", serde_json::to_string(&request)?),
+        ) {
+            Ok(response) => {
+                let response_json: Value = serde_json::from_str(&response)
+                    .context("compile TCP response was not valid JSON")?;
+                // If command is registered, use its result
+                if response_json.get("errorCode").and_then(Value::as_str) != Some("unknown_command")
+                {
+                    let compile_ok = response_json.get("ok").and_then(Value::as_bool) == Some(true);
+                    if let Some(payload) = response_json
+                        .get("payload")
+                        .and_then(|payload| payload.get("compileResult"))
+                    {
+                        println!("{}", serde_json::to_string_pretty(payload)?);
+                        if payload.get("ok").and_then(Value::as_bool) != Some(true) {
+                            std::process::exit(1);
+                        }
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&response_json)?);
+                    }
+                    if !compile_ok {
+                        std::process::exit(1);
+                    }
+                    return Ok(());
+                }
+                // compile_lux_project not registered — fall through to dynamic code
+                eprintln!(
+                    "compile_lux_project not registered, trying execute-dynamic-code fallback..."
+                );
+            }
+            Err(error) => {
+                eprintln!("Live Unity Editor compile failed to connect, falling back to batch mode: {error}");
+            }
+        }
+
+        // Fallback: use execute-dynamic-code to compile in live Editor
+        let compile_code = "UnityEditor.AssetDatabase.Refresh(UnityEditor.ImportAssetOptions.ForceUpdate); var ok = !UnityEditor.EditorUtility.scriptCompilationFailed; return new { ok, error_count = 0, message = ok ? \"Compilation succeeded.\" : \"Script compilation failed. Check Unity console for errors.\", timestamp_utc = System.DateTime.UtcNow.ToString(\"O\") };";
+        let dynamic_request = json!({
+            "schemaVersion": 1,
+            "requestId": uuid::Uuid::new_v4().to_string(),
+            "command": "execute_lux_dynamic_code",
+            "token": discovery.token,
+            "params": { "dynamicCode": compile_code }
+        });
+        match send_unity_tcp_line(
+            &discovery,
+            &format!("{}\n", serde_json::to_string(&dynamic_request)?),
+        ) {
+            Ok(response) => {
+                let response_json: Value = serde_json::from_str(&response)
+                    .context("dynamic code compile response was not valid JSON")?;
+                let compile_ok = response_json.get("ok").and_then(Value::as_bool) == Some(true);
+                if let Some(payload) = response_json
+                    .get("payload")
+                    .and_then(|p| p.get("dynamicCodeResult"))
+                {
+                    let _success = payload
+                        .get("success")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let result_str = payload.get("result").and_then(Value::as_str).unwrap_or("");
+                    let ok = result_str.contains("ok = True") || result_str.contains("ok=True");
+                    println!(
+                        "{{\"ok\": {}, \"message\": \"{}\", \"source\": \"dynamic-code\"}}",
+                        ok,
+                        if ok {
+                            "Compilation succeeded."
+                        } else {
+                            "Script compilation failed. Check Unity console for errors."
+                        }
+                    );
+                    if !ok {
+                        std::process::exit(1);
+                    }
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&response_json)?);
+                }
+                if !compile_ok {
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
+            Err(error) => {
+                eprintln!(
+                    "Dynamic code compile also failed: {error}, falling back to batch mode..."
+                );
+            }
+        }
+    } else {
+        eprintln!("No live Unity Editor detected, falling back to batch mode...");
+    }
+
     let launch_target = resolve_unity_launch_target(&project_root)?;
 
     eprintln!(
@@ -2636,8 +4006,60 @@ fn run_batch_compile(args: CompileArgs) -> anyhow::Result<()> {
 
 fn run_batch_tests(args: RunTestsArgs) -> anyhow::Result<()> {
     let project_root = resolve_project_root(&args.project_path)?;
+    let platform = args.test_platform.clone();
+
+    if let Ok(discovery) = read_unity_bridge_discovery(&project_root) {
+        let mut params = serde_json::Map::new();
+        params.insert("testPlatform".to_string(), Value::String(platform.clone()));
+        if let Some(test_results) = &args.test_results {
+            params.insert(
+                "testResults".to_string(),
+                Value::String(test_results.display().to_string()),
+            );
+        }
+        let request = json!({
+            "schemaVersion": 1,
+            "requestId": uuid::Uuid::new_v4().to_string(),
+            "command": "run_lux_tests",
+            "token": discovery.token,
+            "params": Value::Object(params)
+        });
+        match send_unity_tcp_line(
+            &discovery,
+            &format!("{}\n", serde_json::to_string(&request)?),
+        ) {
+            Ok(response) => {
+                let response_json: Value = serde_json::from_str(&response)
+                    .context("run-tests TCP response was not valid JSON")?;
+                let error_code = response_json.get("errorCode").and_then(Value::as_str);
+                if matches!(error_code, Some("unknown_command" | "registry_not_ready")) {
+                    eprintln!(
+                        "run_lux_tests not available in live Unity Editor, falling back to batch mode..."
+                    );
+                } else {
+                    if let Some(payload) = response_json
+                        .get("payload")
+                        .and_then(|payload| payload.get("testRunResult"))
+                    {
+                        println!("{}", serde_json::to_string_pretty(payload)?);
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&response_json)?);
+                    }
+                    if response_json.get("ok").and_then(Value::as_bool) != Some(true) {
+                        std::process::exit(1);
+                    }
+                    return Ok(());
+                }
+            }
+            Err(error) => {
+                eprintln!("Live Unity Editor test run failed to connect, falling back to batch mode: {error}");
+            }
+        }
+    } else {
+        eprintln!("No live Unity Editor detected, falling back to batch mode...");
+    }
+
     let launch_target = resolve_unity_launch_target(&project_root)?;
-    let platform = args.test_platform;
 
     let results_dir = project_root.join("TestResults");
     fs::create_dir_all(&results_dir)
@@ -2706,11 +4128,22 @@ fn run_batch_tests(args: RunTestsArgs) -> anyhow::Result<()> {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-fn resolve_project_root(project_path: &Option<PathBuf>) -> anyhow::Result<PathBuf> {
+pub(crate) fn resolve_project_root(project_path: &Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    resolve_project_root_with_max_depth(project_path, 0)
+}
+
+fn resolve_project_root_with_max_depth(
+    project_path: &Option<PathBuf>,
+    max_depth: i64,
+) -> anyhow::Result<PathBuf> {
     match project_path {
         Some(path) => Ok(path.clone()),
-        None => find_unity_project_root(std::env::current_dir()?)
-            .context("Unity project not found. Use --project-path."),
+        None => {
+            let current_dir = std::env::current_dir()?;
+            find_unity_project_root(current_dir.clone())
+                .or_else(|| find_unity_project_root_within_depth(&current_dir, max_depth.max(0)))
+                .context("Unity project not found. Use --project-path.")
+        }
     }
 }
 
@@ -2723,6 +4156,28 @@ fn find_unity_project_root(mut current: PathBuf) -> Option<PathBuf> {
             return None;
         }
     }
+}
+
+fn find_unity_project_root_within_depth(root: &Path, max_depth: i64) -> Option<PathBuf> {
+    if is_unity_project(root) {
+        return Some(root.to_path_buf());
+    }
+
+    if max_depth == 0 {
+        return None;
+    }
+
+    let entries = fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(project_root) = find_unity_project_root_within_depth(&path, max_depth - 1) {
+                return Some(project_root);
+            }
+        }
+    }
+
+    None
 }
 
 fn is_unity_project(path: &Path) -> bool {
@@ -2820,10 +4275,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         token: args.token,
         history_capacity: args.history_capacity,
     });
-    let idle_timeout = args
-        .idle_timeout
-        .checked_mul(60)
-        .map(Duration::from_secs);
+    let idle_timeout = args.idle_timeout.checked_mul(60).map(Duration::from_secs);
     let app = server::router(state.clone());
     let listener = tokio::net::TcpListener::bind(addr)
         .await
