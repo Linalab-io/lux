@@ -10,12 +10,14 @@ LUX is a unified Unity Editor AI adapter and automation toolkit. It is an indepe
 | :--- | :--- | :--- |
 | `LuxEditor/` | Unity Editor C# scripts | `Linalab.LuxEditor` |
 | `AiBridgeEditor/` | TCP server and protocol | `Linalab.UnityAiBridge.Editor` |
-| `UnityGitEditor/` | Git integration | `Linalab.UnityGit.Editor` |
-| `CodexImage/` | Image generation pipeline | C# Editor scripts |
+| `Addons/unity-git/` | Git integration addon | `Linalab.UnityGit.Editor` |
+| `Addons/codex-image/` | Image generation pipeline addon | C# Editor scripts |
+| `Addons/pipeline-editor/` | Visual pipeline editor addon | C# Editor scripts |
 | `RustGateway~/` | Rust CLI and Web Server | Axum 0.7, React 19 |
 | `McpHelper~/` | Node.js MCP helper | Node.js |
 | `Skills/lux-unity/` | Core AI skills | Manifest + SKILL.md |
 | `*Tests/` | C# and Rust test suites | NUnit / Cargo |
+| `docs/` | Situational reference documentation | Markdown |
 
 ## Key Conventions
 
@@ -42,6 +44,20 @@ LUX is a unified Unity Editor AI adapter and automation toolkit. It is an indepe
 ### Skills
 - Core skills are in `Skills/`. They cannot be removed.
 - Structure: `manifest.json`, `SKILL.md`, and `references/`.
+
+## References & Situational Docs
+
+LUX uses a situational documentation system to provide context-specific guidance for AI agents. Load these documents based on your current task.
+
+| Agent is about to... | Load this reference |
+|---|---|
+| Modify AI Bridge protocol or commands | `references/unity-cli-loop.md` + `scenarios/protocol-changes.md` |
+| Add/modify addon management UI or logic | `references/gpm-unity.md` + `scenarios/addon-management.md` |
+| Add a new CLI command in Rust | `references/unity-cli-loop.md` + `scenarios/new-cli-command.md` |
+| Create a new addon package | `references/gpm-unity.md` + `scenarios/new-addon.md` |
+| Write or modify tests | `references/unity-cli-loop.md` + `scenarios/testing.md` |
+
+Detailed documentation is available in the `docs/` folder.
 
 ## Anti-Patterns (DO NOT)
 - Do not remove the `Lux` prefix from C# class names.

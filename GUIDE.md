@@ -48,7 +48,7 @@ LUX consists of several core modules.
 | :--- | :--- |
 | **LuxEditor** | Main adapter. Includes the workbench window, automation gateway, and WebRTC producer. |
 | **AiBridgeEditor** | TCP server and protocol handler for communication with AI tools. |
-| **UnityGitEditor** | Supports Git status checks, staging, and branch management within Unity. |
+| **unity-git addon** | Supports Git status checks, staging, and branch management within Unity. |
 | **CodexImage** | Node-based image generation pipeline engine. |
 | **RustGateway** | Axum-based web server and CLI. Provides the web UI and API endpoints. |
 | **Skills** | Core skill sets and reference documentation for Unity control. |

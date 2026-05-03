@@ -13,64 +13,71 @@ local automation, validation, and project operations.
 
 ## Features
 
-### AI Tool Integration
+### Core Features
 
-- **Multi-AI Terminal** — Switch between Claude Code, OpenAI Codex, and
-  OpenCode in a web-based xterm terminal with per-tool session persistence
-  and command history.
+These features are bundled with LUX and require no additional installation.
+
+#### AI Tool Integration
+
 - **Skill Dispatch** — Invoke compile, test, screenshot, logs, playmode, and
   dynamic-code from any active AI tool through a unified skill panel.
 - **Tool Execution API** — Server-side `/api/tools/execute` with WebSocket
   event broadcasting to connected clients.
 - **AI Tool Dispatcher** — Unity-side C# bridge (`LuxAIToolDispatcher`) that
   routes tool commands to the gateway server.
-
-### Visual Pipeline Editor
-
-- **ReactFlow Node Editor** — Drag-and-drop graph with typed port connections.
-- **6 Node Types** — UnityContext, OutputDirectory, PromptTemplate,
-  CodexGeneration, Segmentation, MaskPostProcessing.
-- **Undo/Redo** — 40-step history stack with copy/paste support.
-- **Save/Load/Execute** — Pipeline workflows as JSON through `/api/graphs`,
-  executable from the web UI.
-
-### Remote Access & Streaming
-
-- **WebRTC Streaming** — Unity camera capture with configurable resolution and
-  frame rate via `com.unity.webrtc` (reflection-based backend detection).
-- **Remote Control** — Mouse, keyboard, and touch input forwarding from
-  browser to Unity Editor.
-- **Signaling Relay** — Queue-based WebSocket message delivery for session
-  negotiation.
-- **Token Authentication** — All remote and signaling endpoints require
-  `x-lux-token` header.
-- **STUN/TURN Support** — Configurable ICE servers for local and remote
-  networks.
-
-### Unity Editor Integration
-
-- **Lux Workbench** — Main control window for the LUX system.
 - **AI Bridge TCP Server** — Protocol handler for external terminal/client
   connections with dynamic code execution, input recording/replay.
-- **Unity Git** — Status, staging, history, branches, remotes, and submodules
-  in Editor windows.
-- **Codex Image** — Node-based image generation pipeline with multiple
-  exporters (Unity 2D Animation, Spine draft rig, sprite sheets).
-- **Automation Guardrails** — Command blacklist, audit log, and approval state.
+- **MCP Helper** — Node.js MCP tools for AI tool integration (`McpHelper~/`).
+
+#### Unity Editor Integration
+
+- **Lux Workbench** — Main control window for the LUX system.
+- **Automation Gateway** — Command execution engine with blacklist, audit log,
+  and approval state.
 - **Server Status Indicator** — Shows gateway server status in Editor with
   heartbeat keep-alive and uptime display.
+- **Compile Watch / Batch Compile** — Auto-compile on change detection and
+  dry-run batch compilation.
 
-### Rust Gateway & CLI
+#### Rust Gateway & CLI
 
-- **Web Server** — Axum-based HTTP/WebSocket gateway serving React SPA and
-  REST API.
+- **Web Server** — Axum-based HTTP/WebSocket gateway serving REST API.
 - **CLI Commands** — Compile, test, Unity control (screenshot, logs, hierarchy,
   dynamic-code, input simulation), and skill management.
 - **Skill System** — Core bundled skills + installable external skills via
   `lux skill install/remove/update`.
 - **Server Lifecycle** — Configurable idle timeout with graceful shutdown;
   Unity Editor sends periodic heartbeats to keep the server alive.
+- **Addon Manager** — Install, remove, and manage optional LUX addons
+  via `lux addon` CLI or the Unity Addon Manager window.
 
+---
+
+### Addons
+
+Addons are optional features that extend LUX. Install them via
+`lux addon install <name>` or the **Addon Manager** window in Unity.
+
+| Addon | Description | Dependencies | Status |
+| :--- | :--- | :--- | :--- |
+| **webrtc** | WebRTC remote streaming and control | `com.unity.webrtc` | Code complete, needs external package |
+| **codex-image** | Node-based image generation pipeline | Codex CLI | Partial (no PSB support) |
+| **pipeline-editor** | Visual ReactFlow graph editor for CodexImage | `codex-image` addon | Code complete |
+| **unity-git** | Git integration in Editor windows | Git CLI | Fully implemented |
+| **multi-ai** | Web-based xterm terminal for Claude/Codex/OpenCode | External AI tools | Fully implemented |
+
+```bash
+# List available and installed addons
+lux addon list
+
+# Install an addon
+lux addon install webrtc
+
+# Remove an addon
+lux addon remove webrtc
+```
+
+---
 ## Roadmap
 
 ### Phase 1 — Core Editor Adapter ✅
@@ -81,9 +88,9 @@ Local-first Unity Editor integration layer for AI-assisted development.
 - AI Bridge TCP server and protocol handler for external terminal/client
   connections (`AiBridgeEditor/`).
 - Unity Git integration with status, staging, and history windows
-  (`UnityGitEditor/`).
+  (`Addons/unity-git/`). — *Addon: `unity-git`*
 - Codex Image generation pipeline with node-based execution engine and
-  multiple exporters (`CodexImage/`).
+  multiple exporters (`Addons/codex-image/`). — *Addon candidate: `codex-image`*
 - Rust `lux` CLI: compile, test, unity status, and skill commands
   (`RustGateway~/`).
 - Automation guardrails: command blacklist, audit log, and approval state.
@@ -105,6 +112,7 @@ Extend the Rust gateway into a full web-accessible control surface.
 ### Phase 3 — Visual Pipeline Editor ✅
 
 Interactive graph-based editing for CodexImage pipelines.
+*Addon candidate: `pipeline-editor`*
 
 - Drag-and-drop node graph with typed port connections via ReactFlow.
 - Save/load pipeline workflows as JSON through `/api/graphs`.
@@ -117,6 +125,7 @@ Interactive graph-based editing for CodexImage pipelines.
 ### Phase 4 — Remote Access & Streaming ✅
 
 Real-time remote Unity control through WebRTC.
+*Addon candidate: `webrtc`* — Code complete but requires `com.unity.webrtc`.
 
 - Unity C# WebRTC producer with reflection-based `com.unity.webrtc`
   backend, camera capture, and configurable resolution/frame rate.
@@ -130,6 +139,7 @@ Real-time remote Unity control through WebRTC.
 ### Phase 5 — Multi-AI Platform ✅
 
 Unified skill dispatch across multiple AI coding tools.
+*Addon candidate: `multi-ai`*
 
 - Tool selector with Claude Code, OpenAI Codex, and OpenCode tabs.
 - xterm-based AI terminal panel with tool switching and command history.
@@ -140,12 +150,24 @@ Unified skill dispatch across multiple AI coding tools.
 - Sessions persist across tool switches without data loss.
 - Skill install/remove/update CLI commands.
 
+### Phase 6 — Addon Architecture 🔄
+
+Separate non-core features into installable addons with Addon Manager.
+
+- Addon Manager UI in Unity Editor (`LuxAddonManagerWindow`).
+- `lux addon list/install/remove` CLI commands.
+- WebRTC as first addon (`lux-addon-webrtc`).
+- CodexImage as addon (`lux-addon-codex-image`).
+- Visual Pipeline Editor as addon (`lux-addon-pipeline-editor`).
+- Unity Git as addon (`lux-addon-unity-git`).
+- Multi-AI Terminal as addon (`lux-addon-multi-ai`).
+- Conditional compilation and graceful degradation for missing addons.
+
 ### Out of Scope
 
 - iOS companion app / PWA (may become a separate package).
 - Windows and Linux editor support (Phase 1 is macOS-first; cross-platform
   path handling is prepared but not tested).
-
 ## Unity Editor Menu Reference
 
 ### Window
@@ -153,9 +175,9 @@ Unified skill dispatch across multiple AI coding tools.
 | Menu Path | Description |
 | :--- | :--- |
 | `Window > Linalab > Lux Workbench` | Main LUX control window |
-| `Window > Linalab > Lux > Unity Git` | Git status, staging, and diff |
-| `Window > Linalab > Lux > Git History Graph` | Visual Git history graph |
-
+| `Window > Linalab > Lux > Addon Manager` | Install and manage LUX addons |
+| `Window > Linalab > Lux > Unity Git` | Git status, staging, and diff *(addon)* |
+| `Window > Linalab > Lux > Git History Graph` | Visual Git history graph *(addon)* |
 ### Tools
 
 | Menu Path | Description |
@@ -307,11 +329,12 @@ com.linalab.lux/
 ├── AiBridgeEditor/      # AI Bridge TCP server and protocol handler
 │   ├── UnityAiBridgeTcpServer.cs      # TCP server (1,898 lines)
 │   └── UnityAiBridgeProtocol.cs       # Protocol handler (830 lines)
-├── UnityGitEditor/      # Unity Git integration
-├── CodexImage/          # Integrated Codex Image generation and pipeline tooling
-│   ├── Editor/Pipeline/               # Pipeline engine and web bridge
+├── Addons/unity-git/    # Unity Git integration addon
+├── Addons/codex-image/ # Codex Image generation and pipeline tooling addon
+│   ├── Editor/Pipeline/               # Pipeline engine
 │   ├── Editor/Backends/               # Codex CLI and segmentation backends
 │   └── Editor/Exporters/              # Unity 2D, Spine, sprite sheet exporters
+├── Addons/pipeline-editor/ # Visual pipeline editor bridge addon
 ├── RustGateway~/        # Rust WebSocket/HTTP gateway and CLI
 │   ├── src/main.rs                    # CLI entry (2,836 lines)
 │   ├── src/server.rs                  # HTTP/WebSocket server (2,439 lines)
@@ -322,8 +345,9 @@ com.linalab.lux/
 ├── Skills/lux-unity/    # Core AI skill (manifest + SKILL.md + 9 references)
 ├── LuxEditorTests/      # LuxEditor unit tests
 ├── AiBridgeTests/       # AI Bridge unit tests
-├── UnityGitTests/       # Unity Git unit tests
-├── CodexImage/Tests/    # CodexImage unit tests (11 files)
+├── Addons/unity-git/Tests/ # Unity Git unit tests
+├── Addons/codex-image/Tests/ # CodexImage unit tests
+├── Addons/pipeline-editor/Tests/ # Pipeline editor bridge unit tests
 ├── LuxTests/            # Automation policy tests
 └── seeds/               # Seed specifications for skill provisioning
 ```

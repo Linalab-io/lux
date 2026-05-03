@@ -1,0 +1,161 @@
+metadata:
+  name: lux-phase6-addon-architecture
+  version: "1.0.0"
+  author: sisyphus
+  created: "2026-05-03"
+  description: Complete Phase 6 Addon Architecture for LUX
+
+goal: |
+  Complete Phase 6 (Addon Architecture) of the LUX roadmap. Transform all non-core
+  features into properly separated installable addons with (1) physical code separation
+  via git mv into Addons/ directory, (2) dedicated asmdef with defineConstraints,
+  (3) Addon Manager UI following gpm.unity patterns, (4) graceful degradation when
+  addons are uninstalled, (5) all 16 unity-cli-loop core skills verified working
+  against live Unity Editor.
+
+constraints:
+  - Unity 6000.0+ (Unity 6.x) compatibility required
+  - Rust gateway uses Axum, tokio, serde - extend do not replace
+  - No new Cargo.toml dependencies for MCP server
+  - ALL commands must work against running Unity Editor via TCP - batch mode is fallback only
+  - Use 3-tier TCP fallback for commands - dedicated then execute-dynamic-code then batch mode
+  - Heavily inspired by unity-cli-loop (hatayama) - attribution must remain
+  - LUX CLI must support everything uloop CLI supports
+  - Existing /health /schema /events endpoints must remain backward compatible
+  - Existing AI Bridge TCP server must not be broken
+  - cargo test must pass after every change
+  - C# LSP must show 0 errors after every change
+  - Follow patterns from docs/references/gpm-unity.md for addon management UI
+  - Follow patterns from docs/references/unity-cli-loop.md for core feature parity
+  - Code physically moved via git mv into Addons/ is preferred over in-place defineConstraints
+  - All classes must have the Lux prefix
+  - Use partial classes for large files
+  - No TODO FIXME or HACK comments
+
+acceptance_criteria:
+  - CodexImage code physically moved via git mv from CodexImage/ to Addons/codex-image/Editor/ with dedicated asmdef defineConstraints LUX_CODEX_IMAGE and addon.json updated. Original CodexImage/ directory removed. C# LSP 0 errors. cargo test passes.
+  - UnityGitEditor code physically moved via git mv from UnityGitEditor/ to Addons/unity-git/Editor/ with dedicated asmdef defineConstraints LUX_UNITY_GIT and addon.json updated. Original UnityGitEditor/ directory removed. C# LSP 0 errors. cargo test passes.
+  - Pipeline Editor addon has code in Addons/pipeline-editor/ with correct addon.json and CodexImage dependency. C# LSP 0 errors. cargo test passes.
+  - LuxAddonManagerWindow follows gpm.unity patterns with service list on left showing install/uninstall/update buttons per addon, detail panel showing version description dependencies status, and visual feedback during operations. Follow docs/scenarios/addon-management.md checklist.
+  - Graceful degradation verified - when any addon is uninstalled related menu items are hidden, core LUX remains fully operational, no compilation errors from missing addon code.
+  - All 16 unity-cli-loop skills verified working against live Unity Editor (launch, compile, get-logs, run-tests, clear-console, focus-window, get-hierarchy, find-game-objects, screenshot, simulate-mouse-ui, simulate-mouse-input, simulate-keyboard, record-input, replay-input, control-play-mode, execute-dynamic-code).
+  - All existing Rust smoke tests 43+ pass. cargo test exits 0. cargo check exits 0.
+
+ontology_schema:
+  name: LuxAddonSeparation
+  description: Represents the separation status of a non-core feature into an installable addon
+  fields:
+    - name: addon_name
+      type: string
+      description: Addon identifier
+    - name: separation_type
+      type: string
+      description: How the addon was separated (git_mv or define_constraints or new_code)
+    - name: has_dedicated_asmdef
+      type: boolean
+      description: Whether the addon has its own assembly definition
+    - name: has_addon_json
+      type: boolean
+      description: Whether addon.json manifest exists and is valid
+    - name: code_moved
+      type: boolean
+      description: Whether code was physically moved to Addons/ directory
+    - name: graceful_degradation
+      type: boolean
+      description: Whether core works correctly when addon is uninstalled
+    - name: tests_passing
+      type: boolean
+      description: Whether all tests pass after separation
+
+evaluation_principles:
+  - name: complete_separation
+    description: Each addon must be fully separated with dedicated asmdef and Addons/ directory
+    weight: 0.25
+  - name: no_regressions
+    description: All existing tests must pass, no new C# errors, cargo test passes
+    weight: 0.25
+  - name: ui_quality
+    description: Addon Manager UI follows gpm.unity patterns with proper UX
+    weight: 0.2
+  - name: feature_parity
+    description: All 16 unity-cli-loop skills verified working
+    weight: 0.2
+  - name: graceful_degradation
+    description: Core works correctly when any addon is uninstalled
+    weight: 0.1
+
+exit_conditions:
+  - name: all_addons_separated
+    description: All 5 addons have code in Addons/ with dedicated asmdef
+    criteria: all addons code_moved equals true
+  - name: all_tests_passing
+    description: cargo test and C# LSP show 0 errors
+    criteria: all addons tests_passing equals true
+  - name: feature_parity_confirmed
+    description: All 16 core skills verified against live Editor
+    criteria: feature_parity_verified equals true
+  - name: max_iterations
+    description: Safety exit
+    criteria: total_iterations >= 20
+
+project_type: brownfield
+context_references:
+  - path: docs/references/unity-cli-loop.md
+    role: primary
+    summary: Feature parity reference for all 16 skills LUX must provide
+  - path: docs/references/gpm-unity.md
+    role: primary
+    summary: Package management UI/logic patterns for Addon Manager
+  - path: docs/scenarios/addon-management.md
+    role: primary
+    summary: Checklist for addon management modifications
+  - path: docs/scenarios/new-addon.md
+    role: primary
+    summary: Checklist for creating new addon packages
+  - path: docs/scenarios/protocol-changes.md
+    role: reference
+    summary: Protocol change checklist for command registration
+  - path: docs/scenarios/testing.md
+    role: reference
+    summary: Testing patterns and freeze prevention
+  - path: Addons/webrtc/
+    role: reference
+    summary: Reference for properly separated addon structure
+  - path: Addons/multi-ai/
+    role: reference
+    summary: Reference for properly separated addon structure
+  - path: CodexImage/
+    role: primary
+    summary: CodexImage code to be moved to Addons/codex-image/
+  - path: UnityGitEditor/
+    role: primary
+    summary: Unity Git code to be moved to Addons/unity-git/
+  - path: LuxEditor/AddonManager/LuxAddonManagerWindow.cs
+    role: primary
+    summary: Addon Manager UI to be improved
+  - path: RustGateway~/src/main.rs
+    role: reference
+    summary: CLI addon commands and TCP fallback patterns
+  - path: RustGateway~/tests/gateway_cli_smoke.rs
+    role: reference
+    summary: Smoke test patterns
+  - path: AGENTS.md
+    role: reference
+    summary: Project conventions and coding standards
+
+existing_patterns:
+  - WebRTC addon uses git mv to Addons/webrtc/ with dedicated asmdef
+  - Multi-AI addon uses git mv to Addons/multi-ai/ with dedicated asmdef
+  - addon.json manifests define name version description category defineSymbols assemblies
+  - Rust CLI has lux addon list/install/remove commands
+  - 3-tier TCP fallback for compile/run-tests
+  - C# namespace UnityEditor with Lux prefix on all classes
+  - Partial classes for large files over 500 lines
+  - NUnit Test attributes in Tests/Editor/ directories
+
+existing_dependencies:
+  - Unity 6000.0+ with UIToolkit
+  - Axum 0.7, tokio 1, clap 4.5, serde 1 in Rust
+  - React 19 with TypeScript strict for SPA
+  - Newtonsoft.Json Unity package
+  - com.unity.webrtc 3.0.0 optional for webrtc addon

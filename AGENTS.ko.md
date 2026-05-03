@@ -10,8 +10,9 @@ LUX는 통합 유니티 에디터 AI 어댑터이자 자동화 툴킷입니다. 
 | :--- | :--- | :--- |
 | `LuxEditor/` | 유니티 에디터 C# 스크립트 | `Linalab.LuxEditor` |
 | `AiBridgeEditor/` | TCP 서버 및 프로토콜 | `Linalab.UnityAiBridge.Editor` |
-| `UnityGitEditor/` | Git 통합 기능 | `Linalab.UnityGit.Editor` |
-| `CodexImage/` | 이미지 생성 파이프라인 | C# 에디터 스크립트 |
+| `Addons/unity-git/` | Git 통합 애드온 | `Linalab.UnityGit.Editor` |
+| `Addons/codex-image/` | 이미지 생성 파이프라인 애드온 | C# 에디터 스크립트 |
+| `Addons/pipeline-editor/` | 비주얼 파이프라인 에디터 애드온 | C# 에디터 스크립트 |
 | `RustGateway~/` | Rust CLI 및 웹 서버 | Axum 0.7, React 19 |
 | `McpHelper~/` | Node.js MCP 헬퍼 | Node.js |
 | `Skills/lux-unity/` | 핵심 AI 스킬 | Manifest + SKILL.md |
