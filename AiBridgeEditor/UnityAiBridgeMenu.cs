@@ -37,6 +37,11 @@ namespace Linalab.UnityAiBridge.Editor
             return UnityAiBridgeTcpServer.GetDiscoveryFilePath();
         }
 
+        public static bool IsContextServerRunning()
+        {
+            return UnityAiBridgeTcpServer.IsSharedRunning;
+        }
+
         public static void RevealServerDiscovery()
         {
             var discoveryPath = GetServerDiscoveryPath();

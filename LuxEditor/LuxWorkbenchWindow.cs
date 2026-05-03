@@ -1,6 +1,8 @@
 using System.IO;
 using Linalab.UnityAiBridge.Editor;
+#if LUX_UNITY_GIT
 using Linalab.UnityGit.Editor;
+#endif
 using UnityEditor;
 using UnityEngine;
 
@@ -31,13 +33,14 @@ namespace Linalab.Lux.Editor
             _scrollPosition = EditorGUILayout.BeginScrollView(_scrollPosition);
 
             DrawHeader();
+            DrawEnvironmentStatus();
             DrawModuleLaunchers();
             DrawGitSummary();
             DrawAiBridgeControls();
             DrawRustCliControls();
             DrawUnityBridgeControls();
             DrawAutomationControls();
-            DrawRemotePlan();
+            DrawRemoteAddonStatus();
 
             EditorGUILayout.EndScrollView();
         }
@@ -48,6 +51,46 @@ namespace Linalab.Lux.Editor
             EditorGUILayout.HelpBox("Unified Phase 1 adapter for external terminals, AI clients, Git, AI Bridge, and automation guardrails.", MessageType.Info);
         }
 
+        void DrawEnvironmentStatus()
+        {
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField("Environment Status", EditorStyles.boldLabel);
+
+            var cliStatus = LuxRustCliInstaller.GetStatus();
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                Rect rect = GUILayoutUtility.GetRect(16f, 16f, GUILayout.Width(20f));
+                Color cliColor = cliStatus.CliInstalled ? new Color(0.2f, 0.75f, 0.25f) : (cliStatus.CargoAvailable ? new Color(0.95f, 0.7f, 0.15f) : new Color(0.85f, 0.2f, 0.2f));
+                EditorGUI.DrawRect(new Rect(rect.x, rect.y + 2f, 14f, 14f), cliColor);
+                
+                string cliLabel = cliStatus.CliInstalled ? $"Rust CLI Installed (v{cliStatus.CliVersion})" : (cliStatus.CargoAvailable ? "Rust CLI Missing (Cargo Available)" : "Rust CLI & Cargo Missing");
+                EditorGUILayout.LabelField(cliLabel, EditorStyles.boldLabel);
+            }
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                Rect rect = GUILayoutUtility.GetRect(16f, 16f, GUILayout.Width(20f));
+                EditorGUI.DrawRect(new Rect(rect.x, rect.y + 2f, 14f, 14f), LuxServerStatusIndicator.StatusColor(LuxServerStatusIndicator.CurrentStatus));
+                
+                string serverLabel = $"Rust Gateway HTTP: {LuxServerStatusIndicator.StatusLabel(LuxServerStatusIndicator.CurrentStatus)}";
+                if (LuxServerStatusIndicator.CurrentStatus == LuxServerStatusIndicator.LuxServerStatus.Alive)
+                {
+                    serverLabel += $" (Uptime: {LuxServerStatusIndicator.FormatUptime(LuxServerStatusIndicator.UptimeSeconds)})";
+                }
+                EditorGUILayout.LabelField(serverLabel, EditorStyles.boldLabel);
+
+                if (GUILayout.Button("Check", GUILayout.Width(60f)))
+                {
+                    LuxServerStatusIndicator.ForceCheck();
+                }
+            }
+            
+            if (LuxServerStatusIndicator.CurrentStatus != LuxServerStatusIndicator.LuxServerStatus.Alive && LuxServerStatusIndicator.CurrentStatus != LuxServerStatusIndicator.LuxServerStatus.Unknown)
+            {
+                EditorGUILayout.HelpBox(LuxServerStatusIndicator.CurrentMessage + " This does not block `lux unity ...` TCP commands or dynamic code execution.", MessageType.Warning);
+            }
+        }
+
         void DrawModuleLaunchers()
         {
             EditorGUILayout.Space();
@@ -55,10 +98,16 @@ namespace Linalab.Lux.Editor
 
             using (new EditorGUILayout.HorizontalScope())
             {
+#if LUX_UNITY_GIT
                 if (GUILayout.Button("Open Git"))
                 {
                     UnityGitWindow.ShowWindow();
                 }
+#else
+                EditorGUI.BeginDisabledGroup(true);
+                GUILayout.Button("Open Git (Addon Not Installed)");
+                EditorGUI.EndDisabledGroup();
+#endif
 
                 if (GUILayout.Button("Export AI Context"))
                 {
@@ -72,6 +121,7 @@ namespace Linalab.Lux.Editor
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Git Summary", EditorStyles.boldLabel);
 
+#if LUX_UNITY_GIT
             var status = UnityGitStatusService.ReadStatus(GetProjectRoot());
             if (!status.IsRepository)
             {
@@ -82,12 +132,15 @@ namespace Linalab.Lux.Editor
             EditorGUILayout.LabelField("Repository", status.RepositoryRoot);
             EditorGUILayout.LabelField("Branch", status.BranchName);
             EditorGUILayout.LabelField("Changed Paths", status.Entries.Count.ToString());
+#else
+            EditorGUILayout.HelpBox("Install the Unity Git addon to enable Git status in the workbench.", MessageType.Info);
+#endif
         }
 
         void DrawAiBridgeControls()
         {
             EditorGUILayout.Space();
-            EditorGUILayout.LabelField("External Adapter", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("Unity AI Bridge TCP Adapter", EditorStyles.boldLabel);
 
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -107,7 +160,18 @@ namespace Linalab.Lux.Editor
                 }
             }
 
+            var bridgeRunning = UnityAiBridgeMenu.IsContextServerRunning();
             EditorGUILayout.LabelField("Discovery", UnityAiBridgeMenu.GetServerDiscoveryPath());
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.LabelField("Status", GUILayout.Width(EditorGUIUtility.labelWidth));
+                Rect rect = GUILayoutUtility.GetRect(12f, 12f, GUILayout.Width(16f));
+                EditorGUI.DrawRect(new Rect(rect.x, rect.y + 2f, 12f, 12f), bridgeRunning ? new Color(0.2f, 0.75f, 0.25f) : new Color(0.95f, 0.7f, 0.15f));
+                EditorGUILayout.LabelField(bridgeRunning ? "Running (focus independent)" : "Stopped");
+            }
+
+            EditorGUILayout.HelpBox("Rust CLI Unity commands and dynamic-code execution use this TCP adapter on Unity's main thread; they do not require the Unity Editor window to be focused.", MessageType.Info);
         }
 
         void DrawRustCliControls()
@@ -119,9 +183,14 @@ namespace Linalab.Lux.Editor
             EditorGUILayout.LabelField("cargo", status.CargoAvailable ? status.CargoPath : "Not found");
             EditorGUILayout.LabelField("lux", status.CliInstalled ? $"v{status.CliVersion}" : "Not installed");
 
+            if (!status.CargoAvailable)
+            {
+                EditorGUILayout.HelpBox("Cargo is not available. Please install Rust from https://rustup.rs to enable the Lux CLI.", MessageType.Warning);
+            }
+
             using (new EditorGUILayout.HorizontalScope())
             {
-                EditorGUI.BeginDisabledGroup(_isInstallingRustCli);
+                EditorGUI.BeginDisabledGroup(_isInstallingRustCli || !status.CargoAvailable);
                 if (GUILayout.Button(status.CliInstalled ? "Update Global Rust CLI" : "Install Global Rust CLI"))
                 {
                     InstallOrUpdateRustCli();
@@ -200,16 +269,15 @@ namespace Linalab.Lux.Editor
             EditorGUILayout.LabelField("Audit Entries", AutomationGateway.AuditLog.Entries.Count.ToString());
         }
 
-        void DrawRemotePlan()
+        void DrawRemoteAddonStatus()
         {
             EditorGUILayout.Space();
-            EditorGUILayout.LabelField("Remote Gateway Plan", EditorStyles.boldLabel);
-            EditorGUILayout.LabelField("Phase", LuxRemoteGatewayPlan.Phase);
-            EditorGUILayout.LabelField("Video", LuxRemoteGatewayPlan.VideoTransport);
-            EditorGUILayout.LabelField("Signaling", LuxRemoteGatewayPlan.SignalingTransport);
-            EditorGUILayout.LabelField("Control", LuxRemoteGatewayPlan.ControlTransport);
-            EditorGUILayout.LabelField("Permission", LuxRemoteGatewayPlan.PermissionModel);
-            EditorGUILayout.LabelField("iOS Client Included", LuxRemoteGatewayPlan.IncludesIosClientImplementation ? "Yes" : "No");
+            EditorGUILayout.LabelField("Remote Gateway", EditorStyles.boldLabel);
+#if LUX_WEBRTC
+            EditorGUILayout.HelpBox("WebRTC remote streaming addon is enabled.", MessageType.Info);
+#else
+            EditorGUILayout.HelpBox("Install the WebRTC addon to enable remote streaming.", MessageType.None);
+#endif
         }
 
         static string GetProjectRoot()

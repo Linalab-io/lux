@@ -23,6 +23,12 @@ namespace Linalab.Lux.Editor
             _nextHeartbeatAt = 0.0;
         }
 
+        public static LuxServerStatus CurrentStatus => _status;
+        public static string CurrentMessage => _message;
+        public static long UptimeSeconds => _uptimeSeconds;
+
+        public static void ForceCheck() => RequestHeartbeat(force: true);
+
         [MenuItem("Tools/Linalab/Lux/Server Status")]
         public static void ShowWindow()
         {
@@ -35,7 +41,7 @@ namespace Linalab.Lux.Editor
 
         void OnGUI()
         {
-            EditorGUILayout.LabelField("Lux Gateway Server", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("Lux Rust Gateway HTTP Server", EditorStyles.boldLabel);
             EditorGUILayout.Space();
 
             using (new EditorGUILayout.HorizontalScope())
@@ -121,17 +127,17 @@ namespace Linalab.Lux.Editor
                     var response = JsonUtility.FromJson<HeartbeatResponse>(_request.downloadHandler.text);
                     _uptimeSeconds = response == null ? 0 : response.uptime_seconds;
                     _status = LuxServerStatus.Alive;
-                    _message = "Server heartbeat OK.";
+                    _message = "Rust gateway heartbeat OK. Unity AI Bridge TCP is checked separately.";
                 }
                 else if (_request.result == UnityWebRequest.Result.ConnectionError)
                 {
                     _status = LuxServerStatus.Unreachable;
-                    _message = $"Server unreachable: {_request.error}";
+                    _message = $"Rust gateway HTTP server unreachable at {LuxBridgeSettings.GetGatewayBaseUrl()}: {_request.error}. Start it with `lux serve`; Unity AI Bridge TCP can still be running.";
                 }
                 else
                 {
                     _status = LuxServerStatus.Error;
-                    _message = $"Server error: HTTP {_request.responseCode} {_request.error}";
+                    _message = $"Rust gateway HTTP server error at {LuxBridgeSettings.GetGatewayBaseUrl()}: HTTP {_request.responseCode} {_request.error}";
                 }
             }
             finally
@@ -148,9 +154,14 @@ namespace Linalab.Lux.Editor
             {
                 window.Repaint();
             }
+
+            foreach (var window in Resources.FindObjectsOfTypeAll<LuxWorkbenchWindow>())
+            {
+                window.Repaint();
+            }
         }
 
-        static Color StatusColor(LuxServerStatus status)
+        public static Color StatusColor(LuxServerStatus status)
         {
             switch (status)
             {
@@ -165,7 +176,7 @@ namespace Linalab.Lux.Editor
             }
         }
 
-        static string StatusLabel(LuxServerStatus status)
+        public static string StatusLabel(LuxServerStatus status)
         {
             switch (status)
             {
@@ -180,7 +191,7 @@ namespace Linalab.Lux.Editor
             }
         }
 
-        static string FormatUptime(long seconds)
+        public static string FormatUptime(long seconds)
         {
             if (seconds <= 0)
             {
@@ -193,7 +204,7 @@ namespace Linalab.Lux.Editor
                 : $"{uptime.Hours}h {uptime.Minutes}m {uptime.Seconds}s";
         }
 
-        enum LuxServerStatus
+        public enum LuxServerStatus
         {
             Unknown,
             Alive,
