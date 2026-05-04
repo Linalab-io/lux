@@ -53,6 +53,7 @@ pub struct GatewayState {
 struct SocketQuery {
     role: Option<String>,
     client_id: Option<String>,
+    token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1108,11 +1109,12 @@ async fn events_socket(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let token = headers
+    let header_token = headers
         .get("x-lux-token")
         .and_then(|value| value.to_str().ok());
+    let supplied = header_token.or(query.token.as_deref());
 
-    if !state.accepts_token(token) {
+    if !state.accepts_token(supplied) {
         return (
             StatusCode::UNAUTHORIZED,
             "invalid or missing Lux gateway token",
@@ -2435,5 +2437,65 @@ mod tests {
             let response = app.clone().oneshot(request).await.unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         }
+    }
+
+    #[tokio::test]
+    async fn events_socket_accepts_query_token_auth() {
+        let state = GatewayState::new(GatewayConfig {
+            token: "secret".to_string(),
+            history_capacity: 8,
+        });
+        let (address, handle) = start_test_server(state).await;
+
+        let result = tokio::task::spawn_blocking(move || {
+            let mut stream = websocket_connect(
+                address,
+                "/events?role=test&token=secret",
+            );
+            websocket_send_text(
+                &mut stream,
+                r#"{"schema_version":1,"event_id":"q1","category":"tool","source":"test","session_id":"s","captured_at_utc":"t","payload":{}}"#
+            );
+            stream
+        })
+        .await
+        .unwrap();
+
+        handle.abort();
+        drop(result);
+    }
+
+    #[tokio::test]
+    async fn events_socket_rejects_invalid_query_token() {
+        let state = GatewayState::new(GatewayConfig {
+            token: "secret".to_string(),
+            history_capacity: 8,
+        });
+        let (address, handle) = start_test_server(state).await;
+
+        let status = tokio::task::spawn_blocking(move || {
+            use std::io::{Read, Write};
+            let mut stream = std::net::TcpStream::connect(address).unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let request = format!(
+                "GET /events?token=wrong HTTP/1.1\r\nHost: {address}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+            );
+            stream.write_all(request.as_bytes()).unwrap();
+            let mut response = Vec::new();
+            let mut buffer = [0; 1];
+            while !response.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut buffer).unwrap();
+                response.push(buffer[0]);
+            }
+            let response = String::from_utf8(response).unwrap();
+            response.split_whitespace().nth(1).unwrap().to_string()
+        })
+        .await
+        .unwrap();
+
+        handle.abort();
+        assert_eq!(status, "401");
     }
 }

@@ -502,6 +502,7 @@ namespace Linalab.UnityAiBridge.Editor
             completedInTime = dispatch.Completed.Wait(TimeSpan.FromSeconds(30));
             if (!completedInTime)
             {
+                dispatch.MarkTimedOutIfPending();
                 return UnityAiBridgeProtocol.CreateErrorResponse(
                     request?.requestId,
                     "main_thread_dispatch_timeout",
@@ -522,22 +523,6 @@ namespace Linalab.UnityAiBridge.Editor
                 request?.requestId,
                 "main_thread_dispatch_failed",
                 "Unity AI Bridge main-thread command dispatch returned no response.");
-        }
-
-        private void ProcessMainThreadDispatch(UnityAiBridgeProtocolRequest request, MainThreadDispatch dispatch)
-        {
-            try
-            {
-                dispatch.Response = UnityAiBridgeProtocol.Handle(request, token);
-            }
-            catch (Exception exception)
-            {
-                dispatch.Exception = exception;
-            }
-            finally
-            {
-                dispatch.Completed.Set();
-            }
         }
 
         private static void ProcessMainThreadDispatchQueue()
@@ -562,17 +547,38 @@ namespace Linalab.UnityAiBridge.Editor
 
             while (MainThreadDispatchQueue.TryDequeue(out var dispatch))
             {
+                if (!dispatch.TryBegin())
+                {
+                    continue;
+                }
+
                 if (server == null || !server.IsRunning)
                 {
                     dispatch.Response = UnityAiBridgeProtocol.CreateErrorResponse(
                         dispatch.Request?.requestId,
                         "server_not_running",
                         "Unity AI Bridge server is not running.");
-                    dispatch.Completed.Set();
+                    dispatch.Complete();
                     continue;
                 }
 
-                server.ProcessMainThreadDispatch(dispatch.Request, dispatch);
+                server.ProcessStartedMainThreadDispatch(dispatch.Request, dispatch);
+            }
+        }
+
+        private void ProcessStartedMainThreadDispatch(UnityAiBridgeProtocolRequest request, MainThreadDispatch dispatch)
+        {
+            try
+            {
+                dispatch.Response = UnityAiBridgeProtocol.Handle(request, token);
+            }
+            catch (Exception exception)
+            {
+                dispatch.Exception = exception;
+            }
+            finally
+            {
+                dispatch.Complete();
             }
         }
 
@@ -760,6 +766,12 @@ namespace Linalab.UnityAiBridge.Editor
 
         private sealed class MainThreadDispatch
         {
+            private const int Pending = 0;
+            private const int Started = 1;
+            private const int TimedOut = 2;
+            private int state;
+            private bool waitTimedOut;
+
             public MainThreadDispatch(UnityAiBridgeProtocolRequest request)
             {
                 Request = request;
@@ -769,6 +781,33 @@ namespace Linalab.UnityAiBridge.Editor
             public ManualResetEventSlim Completed { get; } = new ManualResetEventSlim(false);
             public UnityAiBridgeProtocolResponse Response { get; set; }
             public Exception Exception { get; set; }
+
+            public bool TryBegin()
+            {
+                return Interlocked.CompareExchange(ref state, Started, Pending) == Pending;
+            }
+
+            public void MarkTimedOutIfPending()
+            {
+                waitTimedOut = true;
+                if (Interlocked.CompareExchange(ref state, TimedOut, Pending) == Pending)
+                {
+                    Completed.Dispose();
+                }
+                else if (Completed.IsSet)
+                {
+                    Completed.Dispose();
+                }
+            }
+
+            public void Complete()
+            {
+                Completed.Set();
+                if (waitTimedOut)
+                {
+                    Completed.Dispose();
+                }
+            }
         }
 
         private sealed class ClientConnection
