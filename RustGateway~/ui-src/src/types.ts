@@ -1,7 +1,6 @@
 import type { Edge, Node } from 'reactflow'
 
-export type ViewMode = 'nodes' | 'terminal' | 'remote'
-export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'closed' | 'error'
+export type ViewMode = 'nodes' | 'terminal' | 'remote' | 'timeline'
 
 export type LuxEventEnvelope = {
   schema_version: number
@@ -188,3 +187,26 @@ export type SignalingMessage =
   | { type: 'sdp-offer'; payload: { sdp: string } }
   | { type: 'sdp-answer'; payload: { sdp: string } }
   | { type: 'ice-candidate'; payload: { candidate: string; sdpMid: string; sdpMLineIndex: number } }
+
+// AI Action Log types
+export interface AiLogEntry {
+  schema_version: number
+  protocol: string
+  id: string
+  timestamp_utc: string
+  source: string
+  actor: string
+  category: string
+  action: string
+  target: string
+  message: string
+  severity: string
+  success: boolean
+  metadata: Record<string, string>
+}
+
+export interface AiLogContextEntry {
+  entry: AiLogEntry
+  seconds_since_previous: number | null
+  seconds_to_next: number | null
+}
