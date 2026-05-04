@@ -369,7 +369,7 @@ namespace Linalab.UnityAiBridge.Editor
                 releaseDynamicCodeFlight = true;
             }
 
-            if (releaseDynamicCodeFlight && RequiresMainThreadDispatch(request))
+            if (RequiresMainThreadDispatch(request))
             {
                 return HandleRequestOnMainThread(request, releaseDynamicCodeFlight);
             }
