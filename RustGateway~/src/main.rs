@@ -1,3 +1,4 @@
+pub mod ai_log;
 mod protocol;
 mod server;
 
@@ -30,6 +31,7 @@ enum Command {
     Serve(ServeArgs),
     Unity(UnityArgs),
     Skill(SkillArgs),
+    AiLog(AiLogArgs),
     Compile(CompileArgs),
     Bridge(BridgeArgs),
     RunTests(RunTestsArgs),
@@ -80,6 +82,12 @@ struct SkillInstallArgs {
     /// Install to project scope (.lux/skills/) instead of global
     #[arg(short, long)]
     project: bool,
+    /// Write project adaptation metadata after compatibility checks
+    #[arg(long, default_value_t = false)]
+    adapt: bool,
+    /// Print machine-readable JSON output
+    #[arg(long, default_value_t = false)]
+    json: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -98,6 +106,75 @@ struct SkillRemoveArgs {
 struct SkillUpdateArgs {
     /// Skill name to update
     name: String,
+}
+
+#[derive(Parser, Debug)]
+struct AiLogArgs {
+    #[command(subcommand)]
+    action: AiLogAction,
+}
+
+#[derive(Subcommand, Debug)]
+enum AiLogAction {
+    Recent(AiLogRecentArgs),
+    Tail(AiLogTailArgs),
+    Context(AiLogContextArgs),
+    Compact(AiLogCompactArgs),
+}
+
+#[derive(Parser, Debug)]
+struct AiLogRecentArgs {
+    #[arg(long)]
+    project_path: PathBuf,
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+    #[arg(long, default_value_t = false)]
+    json: bool,
+    #[arg(long)]
+    actor: Option<String>,
+    #[arg(long)]
+    category: Option<String>,
+    #[arg(long)]
+    source: Option<String>,
+    #[arg(long)]
+    action: Option<String>,
+    #[arg(long)]
+    event_type: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+struct AiLogTailArgs {
+    #[arg(long)]
+    project_path: PathBuf,
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+    #[arg(long, default_value_t = false)]
+    json: bool,
+    /// Print a bounded snapshot and exit; continuous follow is intentionally non-blocking.
+    #[arg(long, default_value_t = false)]
+    follow: bool,
+}
+
+#[derive(Parser, Debug)]
+struct AiLogContextArgs {
+    #[arg(long)]
+    project_path: PathBuf,
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+    #[arg(long, default_value_t = false)]
+    json: bool,
+}
+
+#[derive(Parser, Debug)]
+struct AiLogCompactArgs {
+    #[arg(long)]
+    project_path: PathBuf,
+    #[arg(long, default_value_t = 5000)]
+    max_lines: usize,
+    #[arg(long, default_value_t = false)]
+    json: bool,
+    #[arg(long, default_value_t = false)]
+    yes: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -463,6 +540,9 @@ struct ServeArgs {
     /// Minutes without HTTP or WebSocket activity before graceful shutdown (0 disables)
     #[arg(long, env = "LUX_GATEWAY_IDLE_TIMEOUT", default_value_t = 30)]
     idle_timeout: u64,
+    /// Unity project root used for project-bound gateway APIs
+    #[arg(long, env = "LUX_PROJECT_PATH")]
+    project_path: Option<PathBuf>,
 }
 
 #[derive(Parser, Debug)]
@@ -534,6 +614,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Serve(args) => serve(args).await,
         Command::Unity(args) => run_lux_unity_command(args),
         Command::Skill(args) => run_skill_command(args),
+        Command::AiLog(args) => run_ai_log_command(args),
         Command::Compile(args) => run_batch_compile(args),
         Command::Bridge(args) => run_bridge_command(args),
         Command::RunTests(args) => run_batch_tests(args),
@@ -562,6 +643,126 @@ async fn main() -> anyhow::Result<()> {
             generate(shell, &mut cmd, name, &mut std::io::stdout());
             Ok(())
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// lux ai-log
+// ---------------------------------------------------------------------------
+
+fn run_ai_log_command(args: AiLogArgs) -> anyhow::Result<()> {
+    match args.action {
+        AiLogAction::Recent(recent_args) => print_ai_log_recent(recent_args),
+        AiLogAction::Tail(tail_args) => print_ai_log_tail(tail_args),
+        AiLogAction::Context(context_args) => print_ai_log_context(context_args),
+        AiLogAction::Compact(compact_args) => compact_ai_log(compact_args),
+    }
+}
+
+fn print_ai_log_recent(args: AiLogRecentArgs) -> anyhow::Result<()> {
+    let log_path = ai_log::ensure_log_path(&args.project_path)?;
+    let entries = ai_log::read_log_entries(&log_path, &ai_log_filter_from_recent(&args))?;
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "projectPath": args.project_path,
+                "path": log_path,
+                "count": entries.len(),
+                "entries": entries,
+            }))?
+        );
+        return Ok(());
+    }
+
+    for entry in entries {
+        println!("{} {}", entry.timestamp, entry.value);
+    }
+    Ok(())
+}
+
+fn print_ai_log_tail(args: AiLogTailArgs) -> anyhow::Result<()> {
+    let log_path = ai_log::ensure_log_path(&args.project_path)?;
+    let filter = ai_log::AiLogFilter {
+        limit: Some(args.limit),
+        ..ai_log::AiLogFilter::default()
+    };
+    let entries = ai_log::read_log_entries(&log_path, &filter)?;
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "projectPath": args.project_path,
+                "path": log_path,
+                "follow": args.follow,
+                "count": entries.len(),
+                "entries": entries,
+            }))?
+        );
+        return Ok(());
+    }
+
+    for entry in entries {
+        println!("{} {}", entry.timestamp, entry.value);
+    }
+    if args.follow {
+        eprintln!("lux ai-log tail --follow prints a bounded snapshot and exits in this CLI build");
+    }
+    Ok(())
+}
+
+fn print_ai_log_context(args: AiLogContextArgs) -> anyhow::Result<()> {
+    let log_path = ai_log::ensure_log_path(&args.project_path)?;
+    let filter = ai_log::AiLogFilter {
+        limit: Some(args.limit),
+        ..ai_log::AiLogFilter::default()
+    };
+    let entries = ai_log::read_log_entries(&log_path, &filter)?;
+    let context = ai_log::build_continuation_context(&entries, Some(args.limit));
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&context)?);
+        return Ok(());
+    }
+
+    for entry in context["entries"].as_array().into_iter().flatten() {
+        println!(
+            "{} [{}] {}",
+            entry["timestampUtc"].as_str().unwrap_or_default(),
+            entry["actor"].as_str().unwrap_or_default(),
+            entry["summary"].as_str().unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
+fn compact_ai_log(args: AiLogCompactArgs) -> anyhow::Result<()> {
+    let log_path = ai_log::ensure_log_path(&args.project_path)?;
+    let result = ai_log::compact_log_file(&log_path, args.max_lines)?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+
+    let confirmation = if args.yes { "confirmed" } else { "manual" };
+    println!(
+        "Compacted AI log ({confirmation}): kept {} of {} valid lines, dropped {} total lines",
+        result.valid_after, result.valid_before, result.lines_dropped
+    );
+    Ok(())
+}
+
+fn ai_log_filter_from_recent(args: &AiLogRecentArgs) -> ai_log::AiLogFilter {
+    ai_log::AiLogFilter {
+        limit: Some(args.limit),
+        actor: args.actor.clone(),
+        category: args.category.clone(),
+        source: args.source.clone(),
+        action: args.action.clone(),
+        event_type: args.event_type.clone(),
     }
 }
 
@@ -606,6 +807,8 @@ struct SkillInfo<'a> {
     directory_path: &'a Path,
     references: Vec<String>,
     skill_md_preview: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    adaptation_metadata: Option<Value>,
 }
 
 fn run_skill_command(args: SkillArgs) -> anyhow::Result<()> {
@@ -635,10 +838,7 @@ fn print_skill_list(args: SkillListArgs) -> anyhow::Result<()> {
     for entry in entries {
         println!(
             "{:20} {:10} {:8} {}",
-            entry.manifest.name,
-            entry.manifest.version,
-            entry.scope,
-            entry.manifest.description
+            entry.manifest.name, entry.manifest.version, entry.scope, entry.manifest.description
         );
     }
 
@@ -657,6 +857,7 @@ fn print_skill_info(args: SkillInfoArgs) -> anyhow::Result<()> {
 
     let references = read_skill_references(&entry.directory_path);
     let preview = read_skill_md_preview(&entry.directory_path);
+    let adaptation_metadata = read_skill_adaptation_metadata(&entry.directory_path);
 
     if args.json {
         let info = SkillInfo {
@@ -664,6 +865,7 @@ fn print_skill_info(args: SkillInfoArgs) -> anyhow::Result<()> {
             directory_path: &entry.directory_path,
             references,
             skill_md_preview: preview,
+            adaptation_metadata,
         };
         println!("{}", serde_json::to_string_pretty(&info)?);
         return Ok(());
@@ -701,6 +903,9 @@ fn print_skill_info(args: SkillInfoArgs) -> anyhow::Result<()> {
         entry.manifest.lux_version.as_deref().unwrap_or("N/A")
     );
     println!("Location:     {}", entry.directory_path.display());
+    if adaptation_metadata.is_some() {
+        println!("Adapted:      yes");
+    }
     println!();
     println!("References:");
     if references.is_empty() {
@@ -724,6 +929,22 @@ fn print_skill_info(args: SkillInfoArgs) -> anyhow::Result<()> {
 }
 
 fn install_skill(args: SkillInstallArgs) -> anyhow::Result<()> {
+    if let Err(message) = validate_skill_name(&args.name) {
+        fail_skill_install(args.json, &message);
+    }
+    if args.adapt && !args.project {
+        fail_skill_install(args.json, "--adapt requires --project");
+    }
+    if discover_skills()?
+        .iter()
+        .any(|entry| entry.scope == "core" && entry.manifest.name == args.name)
+    {
+        fail_skill_install(
+            args.json,
+            &format!("refusing to overwrite core skill '{}'", args.name),
+        );
+    }
+
     let target_root = if args.project {
         project_skills_dir().context("failed to determine project skills directory")?
     } else {
@@ -731,9 +952,24 @@ fn install_skill(args: SkillInstallArgs) -> anyhow::Result<()> {
     };
     let target_dir = target_root.join(&args.name);
 
+    let adaptation = if args.adapt {
+        match build_skill_adaptation_metadata(&args.name, &args.source) {
+            Ok(adaptation) => Some(adaptation),
+            Err(error) => fail_skill_install(args.json, &error.to_string()),
+        }
+    } else {
+        None
+    };
+
     if target_dir.exists() {
-        eprintln!("Error: skill '{}' already exists at {}", args.name, target_dir.display());
-        std::process::exit(1);
+        fail_skill_install(
+            args.json,
+            &format!(
+                "skill '{}' already exists at {}",
+                args.name,
+                target_dir.display()
+            ),
+        );
     }
 
     fs::create_dir_all(&target_dir)
@@ -745,6 +981,32 @@ fn install_skill(args: SkillInstallArgs) -> anyhow::Result<()> {
         return Err(error);
     }
 
+    if let Some(adaptation) = &adaptation {
+        let adaptation_path = target_dir.join("lux-adaptation.json");
+        fs::write(&adaptation_path, serde_json::to_string_pretty(adaptation)?).with_context(
+            || {
+                format!(
+                    "failed to write adaptation metadata {}",
+                    adaptation_path.display()
+                )
+            },
+        )?;
+    }
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "installed": true,
+                "name": args.name,
+                "scope": if args.project { "project" } else { "global" },
+                "directory_path": target_dir,
+                "adapted": adaptation.is_some(),
+                "adaptation_metadata": adaptation.as_ref(),
+            }))?
+        );
+        return Ok(());
+    }
     println!(
         "Installed skill '{}' to {}",
         args.name,
@@ -795,7 +1057,11 @@ fn remove_skill(args: SkillRemoveArgs) -> anyhow::Result<()> {
 
     fs::remove_dir_all(&target_dir)
         .with_context(|| format!("failed to remove skill directory {}", target_dir.display()))?;
-    println!("Removed skill '{}' from {}", args.name, target_dir.display());
+    println!(
+        "Removed skill '{}' from {}",
+        args.name,
+        target_dir.display()
+    );
     Ok(())
 }
 
@@ -832,6 +1098,145 @@ fn find_skill_for_update<'a>(entries: &'a [SkillEntry], name: &str) -> Option<&'
         .or_else(|| entries.iter().find(|entry| entry.manifest.name == name))
 }
 
+fn validate_skill_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("skill name must not be empty".to_string());
+    }
+    if name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+        return Err(format!(
+            "unsafe skill name '{}': path traversal is not allowed",
+            name
+        ));
+    }
+    if !name
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
+    {
+        return Err(format!(
+            "unsafe skill name '{}': use only letters, numbers, '-', '_' or '.'",
+            name
+        ));
+    }
+    Ok(())
+}
+
+fn fail_skill_install(json_output: bool, message: &str) -> ! {
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "installed": false,
+                "error": message,
+            }))
+            .expect("serialize skill install error")
+        );
+    } else {
+        eprintln!("Error: {message}");
+    }
+    std::process::exit(1);
+}
+
+fn build_skill_adaptation_metadata(name: &str, source: &str) -> anyhow::Result<Value> {
+    if is_url_source(source) {
+        bail!("--adapt requires a local skill source directory");
+    }
+
+    let project_root = std::env::current_dir().context("failed to determine project root")?;
+    let source_dir = Path::new(source);
+    if !source_dir.is_dir() {
+        bail!("source is not a directory: {}", source_dir.display());
+    }
+
+    let manifest_path = source_dir.join("manifest.json");
+    let skill_md_path = source_dir.join("SKILL.md");
+    if !manifest_path.is_file() {
+        bail!("source skill is missing manifest.json");
+    }
+    if !skill_md_path.is_file() {
+        bail!("source skill is missing SKILL.md");
+    }
+
+    let manifest: SkillManifest = serde_json::from_str(
+        &fs::read_to_string(&manifest_path)
+            .with_context(|| format!("failed to read {}", manifest_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+    if manifest.name != name {
+        bail!(
+            "source manifest name '{}' does not match requested skill '{}'",
+            manifest.name,
+            name
+        );
+    }
+
+    let mut checks = Vec::new();
+    let assets_dir = project_root.join("Assets");
+    let project_settings_dir = project_root.join("ProjectSettings");
+    let unity_project_ok = assets_dir.is_dir() && project_settings_dir.is_dir();
+    checks.push(json!({
+        "name": "unity_project",
+        "ok": unity_project_ok,
+        "message": "Project root contains Assets/ and ProjectSettings/",
+    }));
+    checks.push(json!({
+        "name": "source_manifest",
+        "ok": true,
+        "message": "Source contains manifest.json",
+    }));
+    checks.push(json!({
+        "name": "source_skill_md",
+        "ok": true,
+        "message": "Source contains SKILL.md",
+    }));
+    checks.push(json!({
+        "name": "safe_name",
+        "ok": true,
+        "message": "Skill name is safe for project installation",
+    }));
+    checks.push(json!({
+        "name": "core_overwrite",
+        "ok": true,
+        "message": "Requested skill does not overwrite a core skill",
+    }));
+
+    if !unity_project_ok {
+        bail!("--adapt requires a Unity project root containing Assets/ and ProjectSettings/");
+    }
+
+    let mut warnings = Vec::new();
+    if manifest.lux_version.is_none() {
+        warnings.push("source manifest does not declare luxVersion".to_string());
+    }
+    let package_manifest_path = project_root.join("Packages").join("manifest.json");
+    match fs::read_to_string(&package_manifest_path) {
+        Ok(package_manifest_json) => {
+            if !package_manifest_json.contains("com.linalab.lux") {
+                warnings.push(
+                    "project Packages/manifest.json does not mention com.linalab.lux".to_string(),
+                );
+            }
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => warnings.push(
+            "project Packages/manifest.json was not found; skipped LUX package metadata check"
+                .to_string(),
+        ),
+        Err(error) => warnings.push(format!(
+            "failed to read {}: {error}",
+            package_manifest_path.display()
+        )),
+    }
+
+    Ok(json!({
+        "schema_version": 1,
+        "protocol": "lux.skill.adaptation.v1",
+        "skill_name": name,
+        "source": source,
+        "project_root": project_root,
+        "checks": checks,
+        "warnings": warnings,
+    }))
+}
+
 fn install_skill_from_source(source: &str, target_dir: &Path) -> anyhow::Result<()> {
     if is_url_source(source) {
         eprintln!("Note: URL-based skill install/update is a placeholder");
@@ -865,7 +1270,11 @@ fn install_skill_from_source(source: &str, target_dir: &Path) -> anyhow::Result<
     Ok(())
 }
 
-fn copy_required_skill_file(source_dir: &Path, target_dir: &Path, file_name: &str) -> anyhow::Result<()> {
+fn copy_required_skill_file(
+    source_dir: &Path,
+    target_dir: &Path,
+    file_name: &str,
+) -> anyhow::Result<()> {
     let source_path = source_dir.join(file_name);
     let target_path = target_dir.join(file_name);
     fs::copy(&source_path, &target_path).with_context(|| {
@@ -917,7 +1326,13 @@ fn download_skill_file(
     let url = format!("{}/{}", source.trim_end_matches('/'), file_name);
     let target_path = target_dir.join(file_name);
     let output = ProcessCommand::new("curl")
-        .args(["--fail", "--silent", "--show-error", "--location", "--output"])
+        .args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--output",
+        ])
         .arg(&target_path)
         .arg(&url)
         .output()
@@ -1075,6 +1490,21 @@ fn read_skill_md_preview(directory_path: &Path) -> Vec<String> {
     };
 
     content.lines().take(10).map(str::to_string).collect()
+}
+
+fn read_skill_adaptation_metadata(directory_path: &Path) -> Option<Value> {
+    let adaptation_path = directory_path.join("lux-adaptation.json");
+    let content = fs::read_to_string(&adaptation_path).ok()?;
+    match serde_json::from_str::<Value>(&content) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            eprintln!(
+                "Warning: failed to parse adaptation metadata {}: {error}",
+                adaptation_path.display()
+            );
+            None
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2920,14 +3350,19 @@ fn read_unity_editor_version(project_root: &Path) -> anyhow::Result<String> {
 
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let addr = SocketAddr::new(args.host, args.port);
+    let project_root = args
+        .project_path
+        .map(|path| {
+            path.canonicalize()
+                .with_context(|| format!("failed to canonicalize project path {}", path.display()))
+        })
+        .transpose()?;
     let state = server::GatewayState::new(server::GatewayConfig {
         token: args.token,
         history_capacity: args.history_capacity,
+        project_root,
     });
-    let idle_timeout = args
-        .idle_timeout
-        .checked_mul(60)
-        .map(Duration::from_secs);
+    let idle_timeout = args.idle_timeout.checked_mul(60).map(Duration::from_secs);
     let app = server::router(state.clone());
     let listener = tokio::net::TcpListener::bind(addr)
         .await

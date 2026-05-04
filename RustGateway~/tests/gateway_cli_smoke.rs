@@ -66,6 +66,11 @@ fn rust_lux_cli_exposes_batch_mode_help_flags() {
     assert_command_help_contains(&["run-tests", "--help"], "--test-platform");
     assert_command_help_contains(&["run-tests", "--help"], "--test-results");
     assert_command_help_contains(&["run-tests", "--help"], "--log-file");
+    assert_command_help_contains(&["ai-log", "recent", "--help"], "--project-path");
+    assert_command_help_contains(&["ai-log", "recent", "--help"], "--event-type");
+    assert_command_help_contains(&["ai-log", "tail", "--help"], "--follow");
+    assert_command_help_contains(&["ai-log", "context", "--help"], "--json");
+    assert_command_help_contains(&["ai-log", "compact", "--help"], "--max-lines");
     assert_command_help_contains(&["unity", "status", "--help"], "--project-path");
     assert_command_help_contains(&["unity", "context", "--help"], "--refresh");
     assert_command_help_contains(&["unity", "backend-status", "--help"], "--project-path");
@@ -102,6 +107,120 @@ fn rust_lux_cli_exposes_batch_mode_help_flags() {
     assert_command_help_contains(&["unity", "simulate-mouse-input", "--help"], "--button");
     assert_command_help_contains(&["unity", "simulate-mouse-input", "--help"], "--delta-x");
     assert_command_help_contains(&["unity", "simulate-mouse-input", "--help"], "--scroll-y");
+}
+
+#[test]
+fn ai_log_recent_json_filters_fixture_jsonl() {
+    let project_root = create_ai_log_fixture_project("lux-ai-log-recent");
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "ai-log",
+            "recent",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+            "--limit",
+            "2",
+            "--json",
+            "--actor",
+            "codex",
+            "--category",
+            "ai-action-log",
+            "--source",
+            "cli",
+            "--action",
+            "edit",
+            "--event-type",
+            "append",
+        ])
+        .output()
+        .expect("run lux ai-log recent");
+
+    assert_command_success(&output, "lux ai-log recent");
+    let parsed: Value = serde_json::from_slice(&output.stdout).expect("recent JSON");
+    assert_eq!(parsed["count"], 2);
+    let entries = parsed["entries"].as_array().expect("entries array");
+    assert_eq!(entries[0]["value"]["summary"], "second codex edit");
+    assert_eq!(entries[1]["value"]["summary"], "third codex edit");
+}
+
+#[test]
+fn ai_log_context_json_builds_continuation_context() {
+    let project_root = create_ai_log_fixture_project("lux-ai-log-context");
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "ai-log",
+            "context",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+            "--limit",
+            "2",
+            "--json",
+        ])
+        .output()
+        .expect("run lux ai-log context");
+
+    assert_command_success(&output, "lux ai-log context");
+    let parsed: Value = serde_json::from_slice(&output.stdout).expect("context JSON");
+    assert_eq!(parsed["count"], 2);
+    let entries = parsed["entries"].as_array().expect("entries array");
+    assert_eq!(entries[0]["summary"], "third codex edit");
+    assert_eq!(entries[1]["summary"], "opencode review");
+}
+
+#[test]
+fn ai_log_compact_json_atomically_keeps_tail_valid_lines() {
+    let project_root = create_ai_log_fixture_project("lux-ai-log-compact");
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "ai-log",
+            "compact",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+            "--max-lines",
+            "2",
+            "--json",
+            "--yes",
+        ])
+        .output()
+        .expect("run lux ai-log compact");
+
+    assert_command_success(&output, "lux ai-log compact");
+    let parsed: Value = serde_json::from_slice(&output.stdout).expect("compact JSON");
+    assert_eq!(parsed["validBefore"], 4);
+    assert_eq!(parsed["validAfter"], 2);
+    assert_eq!(parsed["invalidDropped"], 1);
+    assert_eq!(parsed["linesDropped"], 3);
+
+    let compacted = fs::read_to_string(project_root.join(".lux/ai-action-log.jsonl"))
+        .expect("read compacted log");
+    assert!(compacted.contains("third codex edit"));
+    assert!(compacted.contains("opencode review"));
+    assert!(!compacted.contains("first codex edit"));
+    assert!(!project_root.join(".lux/ai-action-log.jsonl.tmp").exists());
+}
+
+#[test]
+fn ai_log_tail_follow_prints_snapshot_and_exits() {
+    let project_root = create_ai_log_fixture_project("lux-ai-log-tail");
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "ai-log",
+            "tail",
+            "--project-path",
+            project_root.to_str().expect("project path UTF-8"),
+            "--limit",
+            "1",
+            "--json",
+            "--follow",
+        ])
+        .output()
+        .expect("run lux ai-log tail --follow");
+
+    assert_command_success(&output, "lux ai-log tail --follow");
+    let parsed: Value = serde_json::from_slice(&output.stdout).expect("tail JSON");
+    assert_eq!(parsed["follow"], true);
+    assert_eq!(parsed["count"], 1);
+    assert_eq!(parsed["entries"][0]["value"]["summary"], "opencode review");
 }
 
 #[test]
@@ -230,6 +349,123 @@ fn skill_install_creates_skill_in_global_scope() {
 
     assert_command_success(&list, "lux skill list");
     assert!(String::from_utf8_lossy(&list.stdout).contains("smoke-install-skill"));
+}
+
+#[test]
+fn skill_install_project_adapt_writes_metadata_and_info_json_reads_it() {
+    let home = create_temp_dir("lux-skill-adapt-home");
+    let project = create_test_unity_project("lux-skill-adapt-project", true);
+    let source = create_test_skill_source("smoke-adapt-skill");
+
+    let install = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "skill",
+            "install",
+            "smoke-adapt-skill",
+            "--source",
+            source.to_str().expect("source path UTF-8"),
+            "--project",
+            "--adapt",
+            "--json",
+        ])
+        .current_dir(&project)
+        .env("HOME", &home)
+        .output()
+        .expect("run lux skill install --project --adapt --json");
+
+    assert_command_success(&install, "lux skill install --adapt");
+    let install_json: Value = serde_json::from_slice(&install.stdout).expect("install JSON");
+    assert_eq!(install_json["installed"], true);
+    assert_eq!(install_json["adapted"], true);
+    assert_eq!(
+        install_json["adaptation_metadata"]["protocol"],
+        "lux.skill.adaptation.v1"
+    );
+
+    let installed_dir = project.join(".lux/skills/smoke-adapt-skill");
+    assert!(installed_dir.join("manifest.json").is_file());
+    assert!(installed_dir.join("SKILL.md").is_file());
+    assert!(installed_dir.join("references/usage.md").is_file());
+    let adaptation_path = installed_dir.join("lux-adaptation.json");
+    assert!(adaptation_path.is_file());
+
+    let info = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args(["skill", "info", "smoke-adapt-skill", "--json"])
+        .current_dir(&project)
+        .env("HOME", &home)
+        .output()
+        .expect("run lux skill info --json");
+
+    assert_command_success(&info, "lux skill info adapted");
+    let info_json: Value = serde_json::from_slice(&info.stdout).expect("info JSON");
+    assert_eq!(info_json["manifest"]["name"], "smoke-adapt-skill");
+    assert_eq!(
+        info_json["adaptation_metadata"]["skill_name"],
+        "smoke-adapt-skill"
+    );
+}
+
+#[test]
+fn skill_install_adapt_requires_project_scope() {
+    let home = create_temp_dir("lux-skill-adapt-requires-project-home");
+    let project = create_test_unity_project("lux-skill-adapt-requires-project", true);
+    let source = create_test_skill_source("smoke-adapt-requires-project-skill");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "skill",
+            "install",
+            "smoke-adapt-requires-project-skill",
+            "--source",
+            source.to_str().expect("source path UTF-8"),
+            "--adapt",
+            "--json",
+        ])
+        .current_dir(&project)
+        .env("HOME", &home)
+        .output()
+        .expect("run lux skill install --adapt without --project");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(1));
+    let parsed: Value = serde_json::from_slice(&output.stdout).expect("error JSON");
+    assert_eq!(parsed["installed"], false);
+    assert!(parsed["error"]
+        .as_str()
+        .expect("error string")
+        .contains("--adapt requires --project"));
+}
+
+#[test]
+fn skill_install_adapt_incompatible_project_exits_1() {
+    let home = create_temp_dir("lux-skill-adapt-incompatible-home");
+    let not_unity_project = create_temp_dir("lux-skill-adapt-incompatible-project");
+    let source = create_test_skill_source("smoke-adapt-incompatible-skill");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lux"))
+        .args([
+            "skill",
+            "install",
+            "smoke-adapt-incompatible-skill",
+            "--source",
+            source.to_str().expect("source path UTF-8"),
+            "--project",
+            "--adapt",
+            "--json",
+        ])
+        .current_dir(&not_unity_project)
+        .env("HOME", &home)
+        .output()
+        .expect("run incompatible lux skill install --adapt");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(1));
+    let parsed: Value = serde_json::from_slice(&output.stdout).expect("error JSON");
+    assert_eq!(parsed["installed"], false);
+    assert!(parsed["error"]
+        .as_str()
+        .expect("error string")
+        .contains("Unity project root"));
 }
 
 #[test]
@@ -2092,6 +2328,24 @@ fn assert_command_success(output: &std::process::Output, label: &str) {
     );
 }
 
+fn create_ai_log_fixture_project(prefix: &str) -> std::path::PathBuf {
+    let project_root = create_temp_dir(prefix).join("Project");
+    let lux_directory = project_root.join(".lux");
+    fs::create_dir_all(&lux_directory).expect("create .lux");
+    fs::write(
+        lux_directory.join("ai-action-log.jsonl"),
+        concat!(
+            "{\"timestampUtc\":\"2026-05-04T00:00:01Z\",\"actor\":\"codex\",\"category\":\"ai-action-log\",\"source\":\"cli\",\"action\":\"edit\",\"eventType\":\"append\",\"summary\":\"first codex edit\"}\n",
+            "not-json\n",
+            "{\"timestampUtc\":\"2026-05-04T00:00:02Z\",\"actor\":\"codex\",\"category\":\"ai-action-log\",\"source\":\"cli\",\"action\":\"edit\",\"eventType\":\"append\",\"summary\":\"second codex edit\"}\n",
+            "{\"timestampUtc\":\"2026-05-04T00:00:03Z\",\"actor\":\"codex\",\"category\":\"ai-action-log\",\"source\":\"cli\",\"action\":\"edit\",\"eventType\":\"append\",\"summary\":\"third codex edit\"}\n",
+            "{\"timestampUtc\":\"2026-05-04T00:00:04Z\",\"actor\":\"opencode\",\"category\":\"review\",\"source\":\"cli\",\"action\":\"qa\",\"eventType\":\"complete\",\"summary\":\"opencode review\"}\n",
+        ),
+    )
+    .expect("write AI log fixture");
+    project_root
+}
+
 fn create_test_skill_source(name: &str) -> std::path::PathBuf {
     let source = create_temp_dir(&format!("lux-skill-source-{name}"));
     fs::write(
@@ -2112,14 +2366,42 @@ fn create_test_skill_source(name: &str) -> std::path::PathBuf {
         ),
     )
     .expect("write test skill manifest");
-    fs::write(source.join("SKILL.md"), format!("# {name}\n\nSmoke test skill.\n"))
-        .expect("write test skill body");
+    fs::write(
+        source.join("SKILL.md"),
+        format!("# {name}\n\nSmoke test skill.\n"),
+    )
+    .expect("write test skill body");
 
     let references = source.join("references");
     fs::create_dir_all(&references).expect("create references dir");
     fs::write(references.join("usage.md"), "# Usage\n").expect("write reference");
 
     source
+}
+
+fn create_test_unity_project(prefix: &str, include_lux_package: bool) -> std::path::PathBuf {
+    let project = create_temp_dir(prefix);
+    fs::create_dir_all(project.join("Assets")).expect("create Assets dir");
+    fs::create_dir_all(project.join("ProjectSettings")).expect("create ProjectSettings dir");
+    fs::create_dir_all(project.join("Packages")).expect("create Packages dir");
+    let dependencies = if include_lux_package {
+        r#""com.linalab.lux": "file:Packages/com.linalab.lux""#
+    } else {
+        r#""com.unity.modules.ai": "1.0.0""#
+    };
+    fs::write(
+        project.join("Packages/manifest.json"),
+        format!(
+            r#"{{
+  "dependencies": {{
+    {dependencies}
+  }}
+}}
+"#
+        ),
+    )
+    .expect("write Packages/manifest.json");
+    project
 }
 
 fn make_executable(path: &Path) {

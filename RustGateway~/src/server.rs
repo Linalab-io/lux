@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -8,8 +8,7 @@ use std::{
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path as AxumPath, Query, State,
-        Request,
+        Path as AxumPath, Query, Request, State,
     },
     http::{HeaderMap, StatusCode, Uri},
     middleware::{self, Next},
@@ -24,12 +23,19 @@ use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
-use crate::protocol::{EventEnvelope, PROTOCOL_VERSION};
+use crate::{
+    ai_log::{self, AiLogEntry, AiLogFilter},
+    protocol::{EventEnvelope, PROTOCOL_VERSION},
+};
+
+const AI_LOG_DEFAULT_LIMIT: usize = 100;
+const AI_LOG_MAX_LIMIT: usize = 500;
 
 #[derive(Clone, Debug)]
 pub struct GatewayConfig {
     pub token: String,
     pub history_capacity: usize,
+    pub project_root: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -60,6 +66,16 @@ struct SocketQuery {
 struct SignalingQuery {
     role: Option<String>,
     token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AiLogQuery {
+    limit: Option<usize>,
+    actor: Option<String>,
+    category: Option<String>,
+    source: Option<String>,
+    action: Option<String>,
+    event_type: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -127,7 +143,6 @@ pub struct SignalingPeer {
     pub role: SignalingRole,
     pub peer_id: Uuid,
     pub sender: futures_util::stream::SplitSink<WebSocket, Message>,
-
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -343,6 +358,14 @@ impl GatewayState {
             .is_some_and(|value| value == self.config.token)
     }
 
+    fn ai_log_path(&self) -> Result<Option<PathBuf>, anyhow::Error> {
+        self.config
+            .project_root
+            .as_ref()
+            .map(ai_log::ensure_log_path)
+            .transpose()
+    }
+
     async fn record_event(&self, event: EventEnvelope) {
         let mut history = self.history.lock().await;
         while history.len() >= self.config.history_capacity.max(1) {
@@ -363,6 +386,8 @@ pub fn router(state: GatewayState) -> Router {
         .route("/health", get(health))
         .route("/api/health", get(health))
         .route("/api/heartbeat", post(heartbeat))
+        .route("/api/ai-log", get(list_ai_log))
+        .route("/api/ai-log/context", get(get_ai_log_context))
         .route("/schema", get(schema))
         .route("/events", get(events_socket))
         .route("/remote/signaling/:session_id", get(signaling_socket))
@@ -449,6 +474,74 @@ async fn heartbeat(State(state): State<GatewayState>) -> Json<HeartbeatResponse>
         status: "alive",
         uptime_seconds: state.uptime_seconds(),
     })
+}
+
+async fn list_ai_log(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    Query(query): Query<AiLogQuery>,
+) -> Result<Json<Vec<AiLogEntry>>, Response> {
+    require_token(&state, &headers)?;
+    let Some(path) = state.ai_log_path().map_err(internal_error)? else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "project path is not configured",
+        )
+            .into_response());
+    };
+    let filter = ai_log_filter(query);
+    if !path.exists() {
+        return Ok(Json(Vec::new()));
+    }
+    ai_log::read_log_entries(&path, &filter)
+        .map(Json)
+        .map_err(internal_error)
+}
+
+async fn get_ai_log_context(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    Query(query): Query<AiLogQuery>,
+) -> Result<Json<serde_json::Value>, Response> {
+    require_token(&state, &headers)?;
+    let Some(path) = state.ai_log_path().map_err(internal_error)? else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "project path is not configured",
+        )
+            .into_response());
+    };
+    let filter = ai_log_filter(query);
+    if !path.exists() {
+        return Ok(Json(ai_log::build_continuation_context(&[], filter.limit)));
+    }
+    let context_limit = filter.limit;
+    let read_filter = AiLogFilter {
+        limit: None,
+        ..filter
+    };
+    let entries = ai_log::read_log_entries(&path, &read_filter).map_err(internal_error)?;
+    Ok(Json(ai_log::build_continuation_context(
+        &entries,
+        context_limit,
+    )))
+}
+
+fn ai_log_filter(query: AiLogQuery) -> AiLogFilter {
+    AiLogFilter {
+        limit: Some(clamp_ai_log_limit(query.limit)),
+        actor: query.actor,
+        category: query.category,
+        source: query.source,
+        action: query.action,
+        event_type: query.event_type,
+    }
+}
+
+fn clamp_ai_log_limit(limit: Option<usize>) -> usize {
+    limit
+        .unwrap_or(AI_LOG_DEFAULT_LIMIT)
+        .clamp(1, AI_LOG_MAX_LIMIT)
 }
 
 async fn schema() -> Json<EventEnvelope> {
@@ -1524,6 +1617,15 @@ fn not_found() -> Response {
     (StatusCode::NOT_FOUND, "Lux gateway resource not found").into_response()
 }
 
+fn internal_error(error: anyhow::Error) -> Response {
+    tracing::warn!(%error, "Lux gateway request failed");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Lux gateway request failed",
+    )
+        .into_response()
+}
+
 async fn publish_event(state: &GatewayState, event: EventEnvelope) {
     state.record_event(event.clone()).await;
     let _ = state.events.send(event);
@@ -1555,13 +1657,40 @@ mod tests {
     use super::*;
     use axum::body::{to_bytes, Body};
     use http::{header, Method, Request};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
     use tower::ServiceExt;
 
     fn test_app() -> Router {
         router(GatewayState::new(GatewayConfig {
             token: "secret".to_string(),
             history_capacity: 8,
+            project_root: None,
         }))
+    }
+
+    fn test_app_with_project(project_root: PathBuf) -> Router {
+        router(GatewayState::new(GatewayConfig {
+            token: "secret".to_string(),
+            history_capacity: 8,
+            project_root: Some(project_root),
+        }))
+    }
+
+    fn temp_project_root(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("lux-gateway-{name}-{nanos}"));
+        fs::create_dir_all(root.join(".lux")).unwrap();
+        root.canonicalize().unwrap()
+    }
+
+    fn write_ai_log(project_root: &Path, contents: &str) {
+        fs::write(ai_log::resolve_log_path(project_root), contents).unwrap();
     }
 
     async fn json_request(
@@ -1593,6 +1722,12 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    async fn unauthenticated_get(app: Router, uri: &str) -> Response {
+        app.oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
     }
 
     async fn response_json(response: Response) -> serde_json::Value {
@@ -1724,6 +1859,7 @@ mod tests {
         let state = GatewayState::new(GatewayConfig {
             token: "secret".to_string(),
             history_capacity: 8,
+            project_root: None,
         });
 
         assert!(state.accepts_token(Some("secret")));
@@ -1758,6 +1894,7 @@ mod tests {
         let state = GatewayState::new(GatewayConfig {
             token: "secret".to_string(),
             history_capacity: 2,
+            project_root: None,
         });
 
         for index in 0..3 {
@@ -1783,7 +1920,12 @@ mod tests {
     #[tokio::test]
     async fn api_health_reports_uptime() {
         let response = test_app()
-            .oneshot(Request::builder().uri("/api/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -1801,6 +1943,75 @@ mod tests {
         let json = response_json(response).await;
         assert_eq!(json["status"], "alive");
         assert!(json["uptime_seconds"].is_number());
+    }
+
+    #[tokio::test]
+    async fn ai_log_endpoint_requires_token_and_reads_project_bound_log() {
+        let project_root = temp_project_root("auth");
+        write_ai_log(
+            &project_root,
+            "{\"timestampUtc\":\"2026-05-04T00:00:00Z\",\"actor\":\"codex\"}\n",
+        );
+        let app = test_app_with_project(project_root.clone());
+
+        let unauthorized = unauthenticated_get(app.clone(), "/api/ai-log").await;
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let authorized = authenticated_get(app, "/api/ai-log").await;
+        assert_eq!(authorized.status(), StatusCode::OK);
+        let json = response_json(authorized).await;
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        assert_eq!(json[0]["value"]["actor"], "codex");
+
+        let _ = fs::remove_dir_all(project_root);
+    }
+
+    #[tokio::test]
+    async fn ai_log_endpoint_applies_limit_and_filters() {
+        let project_root = temp_project_root("filter");
+        write_ai_log(
+            &project_root,
+            "{\"timestampUtc\":\"2026-05-04T00:00:00Z\",\"actor\":\"codex\",\"category\":\"tool\",\"eventType\":\"start\"}\n\
+             {\"timestampUtc\":\"2026-05-04T00:00:01Z\",\"actor\":\"codex\",\"category\":\"ai-action-log\",\"source\":\"gateway\",\"action\":\"append\",\"eventType\":\"append\"}\n\
+             {\"timestampUtc\":\"2026-05-04T00:00:02Z\",\"actor\":\"opencode\",\"category\":\"ai-action-log\",\"source\":\"gateway\",\"action\":\"append\",\"eventType\":\"append\"}\n\
+             {\"timestampUtc\":\"2026-05-04T00:00:03Z\",\"actor\":\"codex\",\"category\":\"ai-action-log\",\"source\":\"gateway\",\"action\":\"append\",\"eventType\":\"append\"}\n",
+        );
+        let app = test_app_with_project(project_root.clone());
+
+        let response = authenticated_get(
+            app,
+            "/api/ai-log?limit=1&actor=codex&category=ai-action-log&source=gateway&action=append&event_type=append",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = response_json(response).await;
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        assert_eq!(json[0]["value"]["timestampUtc"], "2026-05-04T00:00:03Z");
+
+        let _ = fs::remove_dir_all(project_root);
+    }
+
+    #[tokio::test]
+    async fn ai_log_context_orders_entries_by_timestamp() {
+        let project_root = temp_project_root("context");
+        write_ai_log(
+            &project_root,
+            "{\"timestampUtc\":\"2026-05-04T00:00:02Z\",\"actor\":\"codex\",\"summary\":\"second\"}\n\
+             {\"captured_at_utc\":\"2026-05-04T00:00:01Z\",\"actor\":\"opencode\",\"message\":\"first\"}\n\
+             {\"timestampUtc\":\"2026-05-04T00:00:03Z\",\"actor\":\"codex\",\"description\":\"third\"}\n",
+        );
+        let app = test_app_with_project(project_root.clone());
+
+        let response = authenticated_get(app, "/api/ai-log/context?limit=2").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = response_json(response).await;
+        let entries = json["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["timestampUtc"], "2026-05-04T00:00:02Z");
+        assert_eq!(entries[0]["summary"], "second");
+        assert_eq!(entries[1]["summary"], "third");
+
+        let _ = fs::remove_dir_all(project_root);
     }
 
     #[tokio::test]
@@ -1973,6 +2184,7 @@ mod tests {
         let state = GatewayState::new(GatewayConfig {
             token: "secret".to_string(),
             history_capacity: 8,
+            project_root: None,
         });
         let app = router(state.clone());
 
@@ -2089,6 +2301,7 @@ mod tests {
         let state = GatewayState::new(GatewayConfig {
             token: "secret".to_string(),
             history_capacity: 8,
+            project_root: None,
         });
         let app = router(state.clone());
 
@@ -2148,6 +2361,7 @@ mod tests {
         let state = GatewayState::new(GatewayConfig {
             token: "secret".to_string(),
             history_capacity: 8,
+            project_root: None,
         });
         let app = router(state.clone());
 
@@ -2278,6 +2492,7 @@ mod tests {
         let state = GatewayState::new(GatewayConfig {
             token: "secret".to_string(),
             history_capacity: 8,
+            project_root: None,
         });
         state
             .remote_sessions
@@ -2315,6 +2530,7 @@ mod tests {
         let state = GatewayState::new(GatewayConfig {
             token: "secret".to_string(),
             history_capacity: 8,
+            project_root: None,
         });
         state
             .remote_sessions
@@ -2470,6 +2686,7 @@ mod tests {
         let state = GatewayState::new(GatewayConfig {
             token: "secret".to_string(),
             history_capacity: 8,
+            project_root: None,
         });
         let (address, handle) = start_test_server(state).await;
 
@@ -2496,6 +2713,7 @@ mod tests {
         let state = GatewayState::new(GatewayConfig {
             token: "secret".to_string(),
             history_capacity: 8,
+            project_root: None,
         });
         let (address, handle) = start_test_server(state).await;
 
@@ -2530,6 +2748,7 @@ mod tests {
         let state = GatewayState::new(GatewayConfig {
             token: "secret".to_string(),
             history_capacity: 8,
+            project_root: None,
         });
         state
             .remote_sessions

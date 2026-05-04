@@ -9,6 +9,7 @@ pub enum EventCategory {
     Playmode,
     Scene,
     Log,
+    AiActionLog,
     Tool,
     Input,
     Screenshot,
@@ -68,6 +69,7 @@ mod tests {
             EventCategory::Playmode,
             EventCategory::Scene,
             EventCategory::Log,
+            EventCategory::AiActionLog,
             EventCategory::Tool,
             EventCategory::Input,
             EventCategory::Screenshot,
@@ -81,11 +83,21 @@ mod tests {
                 json!("playmode"),
                 json!("scene"),
                 json!("log"),
+                json!("ai-action-log"),
                 json!("tool"),
                 json!("input"),
                 json!("screenshot"),
                 json!("hierarchy"),
             ]
         );
+    }
+
+    #[test]
+    fn ai_action_log_roundtrips_through_serde() {
+        let serialized = serde_json::to_value(EventCategory::AiActionLog).unwrap();
+        assert_eq!(serialized, json!("ai-action-log"));
+
+        let deserialized: EventCategory = serde_json::from_value(json!("ai-action-log")).unwrap();
+        assert_eq!(deserialized, EventCategory::AiActionLog);
     }
 }
