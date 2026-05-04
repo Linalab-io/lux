@@ -66,6 +66,8 @@ namespace Linalab.LuxEditor.Tests
                 Assert.That(signalingSocket.ConnectUri.AbsolutePath, Is.EqualTo("/remote/signaling/session-c"));
                 Assert.That(signalingSocket.ConnectUri.Query, Is.EqualTo("?role=unity"));
                 Assert.That(eventsSocket.ConnectUri.AbsolutePath, Is.EqualTo("/events"));
+                Assert.That(eventsSocket.ConnectUri.Query, Does.Contain("token=token"));
+                Assert.That(eventsSocket.ConnectUri.Query, Does.Contain("role=unity"));
                 Assert.That(signalingSocket.Token, Is.EqualTo("token"));
             }
         }
@@ -137,6 +139,14 @@ namespace Linalab.LuxEditor.Tests
             public void Initialize()
             {
                 InitializeCallCount++;
+            }
+
+            public void StartUpdatePump()
+            {
+            }
+
+            public void StopUpdatePump()
+            {
             }
 
             public object CreatePeerConnection(IReadOnlyList<LuxIceServer> iceServers)

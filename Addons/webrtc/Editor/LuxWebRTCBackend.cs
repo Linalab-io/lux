@@ -16,6 +16,8 @@ namespace Linalab.LuxEditor
     internal interface IWebRTCBackend
     {
         void Initialize();
+        void StartUpdatePump();
+        void StopUpdatePump();
         object CreatePeerConnection(IReadOnlyList<LuxIceServer> iceServers);
         object CaptureEditorCamera(int width, int height, int frameRate);
         void AddTrack(object peerConnection, object videoTrack);
@@ -33,6 +35,9 @@ namespace Linalab.LuxEditor
     internal sealed class ReflectionWebRTCBackend : IWebRTCBackend
     {
         private Type webRtcType;
+        private MethodInfo updateMethod;
+        private IEnumerator updateEnumerator;
+        private bool updatePumpRunning;
 
         public void Initialize()
         {
@@ -43,6 +48,31 @@ namespace Linalab.LuxEditor
             }
 
             webRtcType.GetMethod("Initialize", BindingFlags.Public | BindingFlags.Static)?.Invoke(null, null);
+            updateMethod = webRtcType.GetMethod("Update", BindingFlags.Public | BindingFlags.Static);
+        }
+
+        public void StartUpdatePump()
+        {
+            if (updatePumpRunning)
+            {
+                return;
+            }
+
+            updatePumpRunning = true;
+            updateEnumerator = updateMethod?.Invoke(null, null) as IEnumerator;
+            EditorApplication.update += PumpWebRTCUpdate;
+        }
+
+        public void StopUpdatePump()
+        {
+            if (!updatePumpRunning)
+            {
+                return;
+            }
+
+            updatePumpRunning = false;
+            EditorApplication.update -= PumpWebRTCUpdate;
+            updateEnumerator = null;
         }
 
         public object CreatePeerConnection(IReadOnlyList<LuxIceServer> iceServers)
@@ -69,16 +99,16 @@ namespace Linalab.LuxEditor
                 throw new InvalidOperationException("No Unity camera was found to capture for Lux WebRTC streaming.");
             }
 
-            var method = typeof(Camera).GetMethod("CaptureStream", new[] { typeof(int), typeof(int), typeof(int) })
-                ?? typeof(Camera).GetMethod("CaptureStream", new[] { typeof(int), typeof(int) });
+            var method = FindStaticMethod("Unity.WebRTC.CameraExtension", "CaptureStream", typeof(Camera), typeof(int), typeof(int), typeof(int))
+                ?? FindStaticMethod("Unity.WebRTC.CameraExtension", "CaptureStream", typeof(Camera), typeof(int), typeof(int));
             if (method == null)
             {
                 throw new InvalidOperationException("Camera.CaptureStream is unavailable. Verify com.unity.webrtc 3.0.0 is installed.");
             }
 
             return method.GetParameters().Length == 3
-                ? method.Invoke(camera, new object[] { width, height, frameRate })
-                : method.Invoke(camera, new object[] { width, height });
+                ? method.Invoke(null, new object[] { camera, width, height })
+                : method.Invoke(null, new object[] { camera, width, height, frameRate });
         }
 
         public void AddTrack(object peerConnection, object videoTrack)
@@ -185,6 +215,21 @@ namespace Linalab.LuxEditor
             (instance as IDisposable)?.Dispose();
         }
 
+        private void PumpWebRTCUpdate()
+        {
+            if (updateEnumerator != null)
+            {
+                if (!updateEnumerator.MoveNext())
+                {
+                    updateEnumerator = null;
+                }
+
+                return;
+            }
+
+            updateMethod?.Invoke(null, null);
+        }
+
         private void InvokeDescription(object peerConnection, string methodName, string type, string sdp)
         {
             var descType = FindType("Unity.WebRTC.RTCSessionDescription");
@@ -241,6 +286,43 @@ namespace Linalab.LuxEditor
                 if (type != null)
                 {
                     return type;
+                }
+            }
+
+            return null;
+        }
+
+        private static MethodInfo FindStaticMethod(string typeName, string methodName, params Type[] parameterTypes)
+        {
+            var type = FindType(typeName);
+            if (type == null)
+            {
+                return null;
+            }
+
+            var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Static);
+            for (var index = 0; index < methods.Length; index++)
+            {
+                var method = methods[index];
+                var parameters = method.GetParameters();
+                if (!string.Equals(method.Name, methodName, StringComparison.Ordinal) || parameters.Length != parameterTypes.Length)
+                {
+                    continue;
+                }
+
+                var matches = true;
+                for (var parameterIndex = 0; parameterIndex < parameters.Length; parameterIndex++)
+                {
+                    if (parameters[parameterIndex].ParameterType != parameterTypes[parameterIndex])
+                    {
+                        matches = false;
+                        break;
+                    }
+                }
+
+                if (matches)
+                {
+                    return method;
                 }
             }
 
