@@ -267,11 +267,20 @@ namespace Linalab.Lux.Editor
         static UnityAiBridgeProtocolResponse ExecuteShellCommand(UnityAiBridgeProtocolRequest request)
         {
             var parameters = request.@params ?? new UnityAiBridgeProtocolRequestParameters();
+            var actor = GetActor(parameters.actor);
             var result = AutomationGateway.ExecuteShellCommand(
                 parameters.commandText,
                 GetWorkingDirectory(parameters.workingDirectory),
-                GetActor(parameters.actor),
+                actor,
                 parameters.approvalGranted);
+            LuxAiActionLogBroadcaster.RecordAutomationCommandResult(
+                "shell",
+                actor,
+                request.requestId,
+                result.Allowed,
+                result.Success,
+                result.ExitCode,
+                result.Message);
 
             return CreateAutomationResponse(request.requestId, result);
         }
@@ -280,11 +289,20 @@ namespace Linalab.Lux.Editor
         {
             var parameters = request.@params ?? new UnityAiBridgeProtocolRequestParameters();
             var arguments = string.IsNullOrWhiteSpace(parameters.gitArguments) ? parameters.commandText : parameters.gitArguments;
+            var actor = GetActor(parameters.actor);
             var result = AutomationGateway.ExecuteGitCommand(
                 arguments,
                 GetWorkingDirectory(parameters.workingDirectory),
-                GetActor(parameters.actor),
+                actor,
                 parameters.approvalGranted);
+            LuxAiActionLogBroadcaster.RecordAutomationCommandResult(
+                "git",
+                actor,
+                request.requestId,
+                result.Allowed,
+                result.Success,
+                result.ExitCode,
+                result.Message);
 
             return CreateAutomationResponse(request.requestId, result);
         }

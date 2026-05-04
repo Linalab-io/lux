@@ -115,14 +115,17 @@ namespace Linalab.LuxEditor
             }
 
             sessionId = string.IsNullOrWhiteSpace(request.SessionId) ? sessionId : request.SessionId;
-            if (string.Equals(request.Kind, "tool-execute", StringComparison.Ordinal))
+            using (UnityEditor.LuxAiActionLogBroadcaster.PushAttribution(request.ToolType, Source, request.ExecutionId))
             {
-                return await ExecuteToolAsync(request, cancellationToken);
-            }
+                if (string.Equals(request.Kind, "tool-execute", StringComparison.Ordinal))
+                {
+                    return await ExecuteToolAsync(request, cancellationToken);
+                }
 
-            if (string.Equals(request.Kind, "skill-dispatch", StringComparison.Ordinal))
-            {
-                return await DispatchSkillAsync(request, cancellationToken);
+                if (string.Equals(request.Kind, "skill-dispatch", StringComparison.Ordinal))
+                {
+                    return await DispatchSkillAsync(request, cancellationToken);
+                }
             }
 
             return null;
@@ -316,6 +319,7 @@ namespace Linalab.LuxEditor
                     Error = processResult.StandardError
                 };
                 OnExecutionComplete?.Invoke(result);
+                UnityEditor.LuxAiActionLogBroadcaster.RecordAIToolDispatch(request.Kind, request.ToolType, request.SkillName, request.ExecutionId, result.Succeeded, result.Succeeded ? "AI tool execution completed." : "AI tool execution failed.");
                 await SendResultAsync(request.SessionId, result, cancellationToken);
                 return result;
             }
@@ -368,6 +372,7 @@ namespace Linalab.LuxEditor
                 }
 
                 OnExecutionComplete?.Invoke(result);
+                UnityEditor.LuxAiActionLogBroadcaster.RecordAIToolDispatch(request.Kind, request.ToolType, request.SkillName, request.ExecutionId, result.Succeeded, result.Succeeded ? "AI skill dispatch completed." : "AI skill dispatch failed.");
                 await SendResultAsync(request.SessionId, result, cancellationToken);
                 return result;
             }
@@ -393,6 +398,7 @@ namespace Linalab.LuxEditor
             };
             OnError?.Invoke(result.Error);
             OnExecutionComplete?.Invoke(result);
+            UnityEditor.LuxAiActionLogBroadcaster.RecordAIToolDispatch(request == null ? string.Empty : request.Kind, request == null ? string.Empty : request.ToolType, request == null ? string.Empty : request.SkillName, request == null ? string.Empty : request.ExecutionId, false, result.Error);
             Debug.LogError(result.Error);
             await SendResultAsync(request == null ? string.Empty : request.SessionId, result, cancellationToken);
             return result;

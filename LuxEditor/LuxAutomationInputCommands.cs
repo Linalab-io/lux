@@ -87,37 +87,48 @@ namespace Linalab.Lux.Editor
                     "Dynamic code is required.");
             }
 
-            try
+            using (LuxAiActionLogBroadcaster.PushAttribution(GetActor(parameters.actor), "dynamic-code", request.requestId))
             {
-                var result = LuxDynamicCodeExecution.Execute(parameters.dynamicCode);
-                return UnityAiBridgeProtocol.CreateOkResponse(
-                    request.requestId,
-                    new UnityAiBridgeProtocolResponsePayload { dynamicCodeResult = result });
-            }
-            catch (LuxDynamicCodePolicyViolationException exception)
-            {
-                var blockedToken = string.IsNullOrEmpty(exception.BlockedToken) ? "unknown" : exception.BlockedToken;
-                var message = exception.Message.IndexOf(blockedToken, StringComparison.Ordinal) >= 0
-                    ? exception.Message
-                    : $"{exception.Message} Blocked token: {blockedToken}";
-                return UnityAiBridgeProtocol.CreateErrorResponse(
-                    request.requestId,
-                    UnityAiBridgeProtocol.ErrorCodePolicyViolation,
-                    message);
-            }
-            catch (LuxDynamicCodeSingleFlightException exception)
-            {
-                return UnityAiBridgeProtocol.CreateErrorResponse(
-                    request.requestId,
-                    UnityAiBridgeProtocol.ErrorCodeSingleFlightBusy,
-                    exception.Message);
-            }
-            catch (Exception exception)
-            {
-                return UnityAiBridgeProtocol.CreateErrorResponse(
-                    request.requestId,
-                    UnityAiBridgeProtocol.ErrorCodeInvalidParams,
-                    exception.Message);
+                try
+                {
+                    var result = LuxDynamicCodeExecution.Execute(parameters.dynamicCode);
+                    LuxAiActionLogBroadcaster.RecordDynamicCodeExecution(
+                        parameters.dynamicCode,
+                        result.success,
+                        result.message,
+                        result.diagnostics == null ? 0 : result.diagnostics.Length);
+                    return UnityAiBridgeProtocol.CreateOkResponse(
+                        request.requestId,
+                        new UnityAiBridgeProtocolResponsePayload { dynamicCodeResult = result });
+                }
+                catch (LuxDynamicCodePolicyViolationException exception)
+                {
+                    var blockedToken = string.IsNullOrEmpty(exception.BlockedToken) ? "unknown" : exception.BlockedToken;
+                    var message = exception.Message.IndexOf(blockedToken, StringComparison.Ordinal) >= 0
+                        ? exception.Message
+                        : $"{exception.Message} Blocked token: {blockedToken}";
+                    LuxAiActionLogBroadcaster.RecordDynamicCodeExecution(parameters.dynamicCode, false, "Dynamic code blocked by policy.", 0);
+                    return UnityAiBridgeProtocol.CreateErrorResponse(
+                        request.requestId,
+                        UnityAiBridgeProtocol.ErrorCodePolicyViolation,
+                        message);
+                }
+                catch (LuxDynamicCodeSingleFlightException exception)
+                {
+                    LuxAiActionLogBroadcaster.RecordDynamicCodeExecution(parameters.dynamicCode, false, "Dynamic code single-flight rejected.", 0);
+                    return UnityAiBridgeProtocol.CreateErrorResponse(
+                        request.requestId,
+                        UnityAiBridgeProtocol.ErrorCodeSingleFlightBusy,
+                        exception.Message);
+                }
+                catch (Exception exception)
+                {
+                    LuxAiActionLogBroadcaster.RecordDynamicCodeExecution(parameters.dynamicCode, false, "Dynamic code execution failed.", 0);
+                    return UnityAiBridgeProtocol.CreateErrorResponse(
+                        request.requestId,
+                        UnityAiBridgeProtocol.ErrorCodeInvalidParams,
+                        exception.Message);
+                }
             }
         }
 

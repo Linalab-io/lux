@@ -30,6 +30,7 @@ namespace Linalab.LuxEditor
                 return false;
             }
 
+            UnityEditor.LuxAiActionLogBroadcaster.RecordWebRTCRemoteInput(inputEvent.type, string.Empty);
             OnInputEvent?.Invoke(inputEvent);
             return true;
         }
