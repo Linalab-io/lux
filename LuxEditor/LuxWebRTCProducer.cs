@@ -172,7 +172,7 @@ namespace Linalab.LuxEditor
             signaling.OnIceCandidateReceived += (candidate, sdpMid, sdpMLineIndex) => ObserveTask(
                 RunOnMainThreadAsync(() => webRtc.AddIceCandidate(peerConnection, candidate, sdpMid, sdpMLineIndex), cancellationToken),
                 "Lux WebRTC ICE candidate receive failed");
-            await signaling.Connect(BuildSignalingUrl(gatewayUrl, sessionId), token, cancellationToken);
+            await signaling.Connect(BuildSignalingUrl(gatewayUrl, sessionId, token), token, cancellationToken);
 
             IsStreaming = true;
             EditorApplication.delayCall += () => OnStreamStarted?.Invoke();
@@ -371,12 +371,17 @@ namespace Linalab.LuxEditor
             }, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
         }
 
-        private static string BuildSignalingUrl(string gatewayUrl, string sessionId)
+        private static string BuildSignalingUrl(string gatewayUrl, string sessionId, string token)
         {
             var builder = new UriBuilder(gatewayUrl);
             builder.Scheme = builder.Scheme == "https" || builder.Scheme == "wss" ? "wss" : "ws";
             builder.Path = "/remote/signaling/" + Uri.EscapeDataString(sessionId);
-            builder.Query = "role=unity";
+            var query = "role=unity";
+            if (!string.IsNullOrEmpty(token))
+            {
+                query += "&token=" + Uri.EscapeDataString(token);
+            }
+            builder.Query = query;
             return builder.Uri.ToString();
         }
 
@@ -392,7 +397,8 @@ namespace Linalab.LuxEditor
             }
             builder.Query = query;
             return builder.Uri.ToString();
-    }
+        }
 
+    }
 
 }
