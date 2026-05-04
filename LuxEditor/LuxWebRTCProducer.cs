@@ -183,14 +183,14 @@ namespace Linalab.LuxEditor
             try
             {
                 await EnsurePeerConnectionAsync(cancellationToken);
-                var answerTask = await RunOnMainThreadAsync(() =>
+                string answer = null;
+                await RunOnMainThreadAsync(async () =>
                 {
-                    webRtc.SetRemoteDescription(peerConnection, "offer", sdp);
-                    return webRtc.CreateAnswerAsync(peerConnection, cancellationToken);
+                    await webRtc.SetRemoteDescriptionAsync(peerConnection, "offer", sdp);
+                    answer = await webRtc.CreateAnswerAsync(peerConnection, cancellationToken);
+                    await webRtc.SetLocalDescriptionAsync(peerConnection, "answer", answer);
                 }, cancellationToken);
-                var answer = await answerTask;
-                await RunOnMainThreadAsync(() => webRtc.SetLocalDescription(peerConnection, "answer", answer), cancellationToken);
-                if (signaling != null)
+                if (signaling != null && !string.IsNullOrEmpty(answer))
                 {
                     await signaling.SendAnswer(answer);
                 }
@@ -314,6 +314,36 @@ namespace Linalab.LuxEditor
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     action();
+                    completion.TrySetResult(null);
+                }
+                catch (Exception exception)
+                {
+                    completion.TrySetException(exception);
+                }
+            };
+
+            return completion.Task;
+        }
+
+        private Task RunOnMainThreadAsync(Func<Task> asyncAction, CancellationToken cancellationToken)
+        {
+            if (asyncAction == null)
+            {
+                return Task.CompletedTask;
+            }
+
+            if (Thread.CurrentThread.ManagedThreadId == MainThreadId)
+            {
+                return asyncAction();
+            }
+
+            var completion = new TaskCompletionSource<object>();
+            EditorApplication.delayCall += async () =>
+            {
+                try
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await asyncAction();
                     completion.TrySetResult(null);
                 }
                 catch (Exception exception)

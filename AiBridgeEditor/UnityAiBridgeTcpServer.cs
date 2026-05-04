@@ -369,11 +369,14 @@ namespace Linalab.UnityAiBridge.Editor
                 releaseDynamicCodeFlight = true;
             }
 
+            if (releaseDynamicCodeFlight && RequiresMainThreadDispatch(request))
+            {
+                return HandleRequestOnMainThread(request, releaseDynamicCodeFlight);
+            }
+
             try
             {
-                return RequiresMainThreadDispatch(request)
-                    ? HandleRequestOnMainThread(request)
-                    : UnityAiBridgeProtocol.Handle(request, token);
+                return UnityAiBridgeProtocol.Handle(request, token);
             }
             finally
             {
@@ -489,14 +492,24 @@ namespace Linalab.UnityAiBridge.Editor
                 .ToArray();
         }
 
-        private UnityAiBridgeProtocolResponse HandleRequestOnMainThread(UnityAiBridgeProtocolRequest request)
+        private UnityAiBridgeProtocolResponse HandleRequestOnMainThread(UnityAiBridgeProtocolRequest request, bool releaseDynamicCodeFlight = false)
         {
             if (Thread.CurrentThread.ManagedThreadId == MainThreadId)
             {
-                return UnityAiBridgeProtocol.Handle(request, token);
+                try
+                {
+                    return UnityAiBridgeProtocol.Handle(request, token);
+                }
+                finally
+                {
+                    if (releaseDynamicCodeFlight)
+                    {
+                        Volatile.Write(ref dynamicCodeInFlight, 0);
+                    }
+                }
             }
 
-            var dispatch = new MainThreadDispatch(request);
+            var dispatch = new MainThreadDispatch(request, releaseDynamicCodeFlight);
             var completedInTime = false;
             MainThreadDispatchQueue.Enqueue(dispatch);
             completedInTime = dispatch.Completed.Wait(TimeSpan.FromSeconds(30));
@@ -771,10 +784,15 @@ namespace Linalab.UnityAiBridge.Editor
             private const int TimedOut = 2;
             private int state;
             private bool waitTimedOut;
+            private readonly Action onCompleted;
 
-            public MainThreadDispatch(UnityAiBridgeProtocolRequest request)
+            public MainThreadDispatch(UnityAiBridgeProtocolRequest request, bool releaseDynamicCodeFlight = false)
             {
                 Request = request;
+                if (releaseDynamicCodeFlight)
+                {
+                    onCompleted = () => Volatile.Write(ref dynamicCodeInFlight, 0);
+                }
             }
 
             public UnityAiBridgeProtocolRequest Request { get; }
@@ -792,6 +810,7 @@ namespace Linalab.UnityAiBridge.Editor
                 waitTimedOut = true;
                 if (Interlocked.CompareExchange(ref state, TimedOut, Pending) == Pending)
                 {
+                    onCompleted?.Invoke();
                     Completed.Dispose();
                 }
                 else if (Completed.IsSet)
@@ -802,6 +821,7 @@ namespace Linalab.UnityAiBridge.Editor
 
             public void Complete()
             {
+                onCompleted?.Invoke();
                 Completed.Set();
                 if (waitTimedOut)
                 {

@@ -25,9 +25,9 @@ namespace Linalab.LuxEditor
         string ReadDataChannelLabel(object dataChannel);
         void OnDataChannelMessage(object dataChannel, Action<string> onMessage);
         void OnIceCandidate(object peerConnection, Action<string, string, int> onIceCandidate);
-        void SetRemoteDescription(object peerConnection, string type, string sdp);
+        Task SetRemoteDescriptionAsync(object peerConnection, string type, string sdp);
         Task<string> CreateAnswerAsync(object peerConnection, CancellationToken cancellationToken);
-        void SetLocalDescription(object peerConnection, string type, string sdp);
+        Task SetLocalDescriptionAsync(object peerConnection, string type, string sdp);
         void AddIceCandidate(object peerConnection, string candidate, string sdpMid, int sdpMLineIndex);
         void DisposeObject(object instance);
     }
@@ -99,16 +99,14 @@ namespace Linalab.LuxEditor
                 throw new InvalidOperationException("No Unity camera was found to capture for Lux WebRTC streaming.");
             }
 
-            var method = FindStaticMethod("Unity.WebRTC.CameraExtension", "CaptureStream", typeof(Camera), typeof(int), typeof(int), typeof(int))
-                ?? FindStaticMethod("Unity.WebRTC.CameraExtension", "CaptureStream", typeof(Camera), typeof(int), typeof(int));
+            var method = FindExtensionMethod("Unity.WebRTC.CameraExtension", "CaptureStream", typeof(Camera), typeof(int), typeof(int))
+                ?? FindExtensionMethod("Unity.WebRTC.CameraExtension", "CaptureStreamTrack", typeof(Camera), typeof(int), typeof(int));
             if (method == null)
             {
-                throw new InvalidOperationException("Camera.CaptureStream is unavailable. Verify com.unity.webrtc 3.0.0 is installed.");
+                throw new InvalidOperationException("Camera.CaptureStream/CaptureStreamTrack is unavailable. Verify com.unity.webrtc 3.0.0 is installed.");
             }
 
-            return method.GetParameters().Length == 3
-                ? method.Invoke(null, new object[] { camera, width, height })
-                : method.Invoke(null, new object[] { camera, width, height, frameRate });
+            return method.Invoke(null, new object[] { camera, width, height });
         }
 
         public void AddTrack(object peerConnection, object videoTrack)
@@ -178,35 +176,75 @@ namespace Linalab.LuxEditor
             eventInfo.AddEventHandler(peerConnection, Delegate.CreateDelegate(eventInfo.EventHandlerType, handler.Target, handler.Method));
         }
 
-        public void SetRemoteDescription(object peerConnection, string type, string sdp)
+        public Task SetRemoteDescriptionAsync(object peerConnection, string type, string sdp)
         {
-            InvokeDescription(peerConnection, "SetRemoteDescription", type, sdp);
+            return InvokeDescriptionAsync(peerConnection, "SetRemoteDescription", type, sdp);
         }
 
         public Task<string> CreateAnswerAsync(object peerConnection, CancellationToken cancellationToken)
         {
             var operation = InvokeBestMatch(peerConnection, "CreateAnswer");
-            var desc = ReadProperty(operation, "Desc") ?? operation;
-            return Task.FromResult(ReadString(desc, "sdp"));
+            if (operation == null)
+            {
+                return Task.FromResult((string)null);
+            }
+
+            var doneProp = operation.GetType().GetProperty("IsDone");
+            if (doneProp == null)
+            {
+                var desc = ReadProperty(operation, "Desc") ?? operation;
+                return Task.FromResult(ReadString(desc, "sdp"));
+            }
+
+            var tcs = new TaskCompletionSource<string>();
+            EditorApplication.update += PumpAnswer;
+            return tcs.Task;
+
+            void PumpAnswer()
+            {
+                try
+                {
+                    if ((bool)doneProp.GetValue(operation))
+                    {
+                        EditorApplication.update -= PumpAnswer;
+                        var desc = ReadProperty(operation, "Desc");
+                        var sdp = desc != null ? ReadString(desc, "sdp") : string.Empty;
+                        tcs.TrySetResult(sdp);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    EditorApplication.update -= PumpAnswer;
+                    tcs.TrySetException(ex);
+                }
+            }
         }
 
-        public void SetLocalDescription(object peerConnection, string type, string sdp)
+        public Task SetLocalDescriptionAsync(object peerConnection, string type, string sdp)
         {
-            InvokeDescription(peerConnection, "SetLocalDescription", type, sdp);
+            return InvokeDescriptionAsync(peerConnection, "SetLocalDescription", type, sdp);
         }
 
         public void AddIceCandidate(object peerConnection, string candidate, string sdpMid, int sdpMLineIndex)
         {
-            var candidateType = FindType("Unity.WebRTC.RTCIceCandidate") ?? FindType("Unity.WebRTC.RTCIceCandidateInit");
+            var candidateInitType = FindType("Unity.WebRTC.RTCIceCandidateInit");
+            if (candidateInitType == null)
+            {
+                return;
+            }
+
+            var init = Activator.CreateInstance(candidateInitType);
+            WritePropertyOrField(init, "candidate", candidate);
+            WritePropertyOrField(init, "sdpMid", sdpMid);
+            WritePropertyOrField(init, "sdpMLineIndex", (int?)sdpMLineIndex);
+
+            var candidateType = FindType("Unity.WebRTC.RTCIceCandidate");
             if (candidateType == null)
             {
                 return;
             }
 
-            var instance = Activator.CreateInstance(candidateType);
-            WritePropertyOrField(instance, "candidate", candidate);
-            WritePropertyOrField(instance, "sdpMid", sdpMid);
-            WritePropertyOrField(instance, "sdpMLineIndex", sdpMLineIndex);
+            var instance = Activator.CreateInstance(candidateType, init);
             InvokeBestMatch(peerConnection, "AddIceCandidate", instance);
         }
 
@@ -242,7 +280,53 @@ namespace Linalab.LuxEditor
             var desc = Activator.CreateInstance(descType);
             WritePropertyOrField(desc, "type", ParseDescriptionType(type));
             WritePropertyOrField(desc, "sdp", sdp);
-            InvokeBestMatch(peerConnection, methodName, desc);
+            InvokeBestMatchRef(peerConnection, methodName, desc);
+        }
+
+        private Task InvokeDescriptionAsync(object peerConnection, string methodName, string type, string sdp)
+        {
+            var descType = FindType("Unity.WebRTC.RTCSessionDescription");
+            if (descType == null)
+            {
+                InvokeBestMatch(peerConnection, methodName, sdp);
+                return Task.CompletedTask;
+            }
+
+            var desc = Activator.CreateInstance(descType);
+            WritePropertyOrField(desc, "type", ParseDescriptionType(type));
+            WritePropertyOrField(desc, "sdp", sdp);
+            var operation = InvokeBestMatchRef(peerConnection, methodName, desc);
+            if (operation == null)
+            {
+                return Task.CompletedTask;
+            }
+
+            var doneProp = operation.GetType().GetProperty("IsDone");
+            if (doneProp == null)
+            {
+                return Task.CompletedTask;
+            }
+
+            var tcs = new TaskCompletionSource<bool>();
+            EditorApplication.update += PumpDone;
+            return tcs.Task;
+
+            void PumpDone()
+            {
+                try
+                {
+                    if ((bool)doneProp.GetValue(operation))
+                    {
+                        EditorApplication.update -= PumpDone;
+                        tcs.TrySetResult(true);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    EditorApplication.update -= PumpDone;
+                    tcs.TrySetException(ex);
+                }
+            }
         }
 
         private static object ParseDescriptionType(string type)
@@ -269,6 +353,41 @@ namespace Linalab.LuxEditor
             }
 
             return null;
+        }
+        private static object InvokeBestMatchRef(object target, string methodName, object arg)
+        {
+            if (target == null)
+            {
+                return null;
+            }
+
+            var methods = target.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance);
+            for (var index = 0; index < methods.Length; index++)
+            {
+                var method = methods[index];
+                if (method.Name != methodName)
+                {
+                    continue;
+                }
+
+                var parameters = method.GetParameters();
+                if (parameters.Length != 1)
+                {
+                    continue;
+                }
+
+                if (!parameters[0].ParameterType.IsByRef)
+                {
+                    return method.Invoke(target, new object[] { arg });
+                }
+
+                var args = new object[1];
+                args[0] = arg;
+                var result = method.Invoke(target, args);
+                return result;
+            }
+
+            return InvokeBestMatch(target, methodName, arg);
         }
 
         private static Type FindType(string fullName)
@@ -314,6 +433,48 @@ namespace Linalab.LuxEditor
                 for (var parameterIndex = 0; parameterIndex < parameters.Length; parameterIndex++)
                 {
                     if (parameters[parameterIndex].ParameterType != parameterTypes[parameterIndex])
+                    {
+                        matches = false;
+                        break;
+                    }
+                }
+
+                if (matches)
+                {
+                    return method;
+                }
+            }
+
+            return null;
+        }
+
+        private static MethodInfo FindExtensionMethod(string typeName, string methodName, params Type[] firstParamTypes)
+        {
+            var type = FindType(typeName);
+            if (type == null)
+            {
+                return null;
+            }
+
+            var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Static);
+            for (var index = 0; index < methods.Length; index++)
+            {
+                var method = methods[index];
+                if (!string.Equals(method.Name, methodName, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var parameters = method.GetParameters();
+                if (parameters.Length < firstParamTypes.Length)
+                {
+                    continue;
+                }
+
+                var matches = true;
+                for (var i = 0; i < firstParamTypes.Length; i++)
+                {
+                    if (parameters[i].ParameterType != firstParamTypes[i])
                     {
                         matches = false;
                         break;

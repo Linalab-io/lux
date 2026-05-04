@@ -185,8 +185,9 @@ namespace Linalab.LuxEditor.Tests
             {
             }
 
-            public void SetRemoteDescription(object peerConnection, string type, string sdp)
+            public Task SetRemoteDescriptionAsync(object peerConnection, string type, string sdp)
             {
+                return Task.CompletedTask;
             }
 
             public Task<string> CreateAnswerAsync(object peerConnection, CancellationToken cancellationToken)
@@ -194,8 +195,9 @@ namespace Linalab.LuxEditor.Tests
                 return Task.FromResult("answer-sdp");
             }
 
-            public void SetLocalDescription(object peerConnection, string type, string sdp)
+            public Task SetLocalDescriptionAsync(object peerConnection, string type, string sdp)
             {
+                return Task.CompletedTask;
             }
 
             public void AddIceCandidate(object peerConnection, string candidate, string sdpMid, int sdpMLineIndex)
