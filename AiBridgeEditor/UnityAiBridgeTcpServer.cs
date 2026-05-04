@@ -936,7 +936,9 @@ namespace Linalab.UnityAiBridge.Editor
                     inputSteps = ExtractInt(line, "inputSteps"),
                     inputFilePath = ExtractString(line, "inputFilePath"),
                     dynamicCode = ExtractString(line, "dynamicCode"),
-                    eventTypes = ExtractString(line, "eventTypes")
+                    eventTypes = ExtractString(line, "eventTypes"),
+                    testPlatform = ExtractString(line, "testPlatform"),
+                    testResults = ExtractString(line, "testResults")
                 }
             };
 

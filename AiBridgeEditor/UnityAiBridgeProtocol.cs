@@ -432,6 +432,8 @@ namespace Linalab.UnityAiBridge.Editor
         public string inputFilePath;
         public string dynamicCode;
         public string eventTypes;
+        public string testPlatform;
+        public string testResults;
     }
 
     [Serializable]
@@ -466,6 +468,8 @@ namespace Linalab.UnityAiBridge.Editor
             public UnityAiBridgeInputRecordPayload inputRecordResult;
             public UnityAiBridgeInputReplayPayload inputReplayResult;
             public UnityAiBridgeDynamicCodeResultPayload dynamicCodeResult;
+            public UnityAiBridgeCompileResultPayload compileResult;
+            public UnityAiBridgeTestRunResultPayload testRunResult;
         }
 
     [Serializable]
@@ -621,6 +625,26 @@ namespace Linalab.UnityAiBridge.Editor
         public UnityAiBridgeDynamicCodeDiagnostic[] diagnostics;
         public UnityAiBridgeConsoleLogEntry[] logs;
         public long elapsedTimeMs;
+    }
+
+    [Serializable]
+    public sealed class UnityAiBridgeCompileResultPayload
+    {
+        public bool ok;
+        public int error_count;
+        public string message;
+        public string timestamp_utc;
+    }
+
+    [Serializable]
+    public sealed class UnityAiBridgeTestRunResultPayload
+    {
+        public bool ok;
+        public string status;
+        public string testId;
+        public string testPlatform;
+        public string testResults;
+        public string message;
     }
 
     [Serializable]
