@@ -343,6 +343,152 @@ pub fn create_lux_mcp_server() -> McpServer {
         });
     }
 
+    server.register_tool(McpTool {
+        name: "unity_control_play_mode".to_string(),
+        description: "Control Unity Editor play mode (play/stop/pause/resume/status)".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "projectPath": { "type": "string", "description": "Absolute path to the Unity project root" },
+                "action": { "type": "string", "enum": ["play", "stop", "pause", "resume", "status"], "description": "Play mode action" },
+                "wait": { "type": "boolean", "description": "Wait for state transition to complete" }
+            },
+            "required": ["projectPath", "action"]
+        }),
+        handler: unity_control_play_mode_handler,
+    });
+
+    server.register_tool(McpTool {
+        name: "unity_clear_console".to_string(),
+        description: "Clear all Unity Console log entries".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "projectPath": { "type": "string", "description": "Absolute path to the Unity project root" }
+            },
+            "required": ["projectPath"]
+        }),
+        handler: unity_clear_console_handler,
+    });
+
+    server.register_tool(McpTool {
+        name: "unity_focus_window".to_string(),
+        description: "Bring Unity Editor window to front".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "projectPath": { "type": "string", "description": "Absolute path to the Unity project root" }
+            },
+            "required": ["projectPath"]
+        }),
+        handler: unity_focus_window_handler,
+    });
+
+    server.register_tool(McpTool {
+        name: "unity_find_game_objects".to_string(),
+        description: "Find and search GameObjects in the Unity scene by name, regex, path, component, tag, or layer".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "projectPath": { "type": "string", "description": "Absolute path to the Unity project root" },
+                "searchMode": { "type": "string", "description": "Search mode (query, selected, etc.)" },
+                "name": { "type": "string", "description": "Exact name match" },
+                "regex": { "type": "string", "description": "Regex pattern for name matching" },
+                "path": { "type": "string", "description": "Hierarchy path filter" },
+                "component": { "type": "string", "description": "Component type filter" },
+                "tag": { "type": "string", "description": "Unity tag filter" },
+                "layer": { "type": "string", "description": "Unity layer filter" },
+                "activeState": { "type": "string", "description": "Active state filter (any, active, inactive)" },
+                "inlineLimit": { "type": "integer", "description": "Max inline results count" }
+            },
+            "required": ["projectPath"]
+        }),
+        handler: unity_find_game_objects_handler,
+    });
+
+    server.register_tool(McpTool {
+        name: "unity_simulate_keyboard".to_string(),
+        description: "Simulate keyboard key input in PlayMode via Unity Input System".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "projectPath": { "type": "string", "description": "Absolute path to the Unity project root" },
+                "action": { "type": "string", "enum": ["press", "key-down", "key-up"], "description": "Keyboard action" },
+                "key": { "type": "string", "description": "Key name (e.g. Space, A, Enter, W)" },
+                "durationMs": { "type": "integer", "description": "Hold duration in milliseconds" }
+            },
+            "required": ["projectPath", "action", "key"]
+        }),
+        handler: unity_simulate_keyboard_handler,
+    });
+
+    server.register_tool(McpTool {
+        name: "unity_simulate_mouse_input".to_string(),
+        description: "Simulate mouse input in PlayMode for gameplay code that reads Mouse.current".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "projectPath": { "type": "string", "description": "Absolute path to the Unity project root" },
+                "action": { "type": "string", "enum": ["click", "long-press", "move-delta", "smooth-delta", "scroll"], "description": "Mouse action" },
+                "button": { "type": "string", "description": "Mouse button (left, right, middle)" },
+                "deltaX": { "type": "number", "description": "Horizontal delta movement" },
+                "deltaY": { "type": "number", "description": "Vertical delta movement" },
+                "scrollX": { "type": "number", "description": "Horizontal scroll amount" },
+                "scrollY": { "type": "number", "description": "Vertical scroll amount" },
+                "durationMs": { "type": "integer", "description": "Hold duration in milliseconds" },
+                "steps": { "type": "integer", "description": "Number of interpolation steps for smooth delta" }
+            },
+            "required": ["projectPath", "action"]
+        }),
+        handler: unity_simulate_mouse_input_handler,
+    });
+
+    server.register_tool(McpTool {
+        name: "unity_simulate_mouse_ui".to_string(),
+        description: "Simulate mouse click/long-press/drag on PlayMode UI elements via EventSystem".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "projectPath": { "type": "string", "description": "Absolute path to the Unity project root" },
+                "action": { "type": "string", "enum": ["click", "long-press", "drag", "drag-start", "drag-move", "drag-end"], "description": "UI mouse action" },
+                "x": { "type": "number", "description": "Screen X coordinate" },
+                "y": { "type": "number", "description": "Screen Y coordinate" },
+                "durationMs": { "type": "integer", "description": "Hold duration in milliseconds" }
+            },
+            "required": ["projectPath", "action", "x", "y"]
+        }),
+        handler: unity_simulate_mouse_ui_handler,
+    });
+
+    server.register_tool(McpTool {
+        name: "unity_record_input".to_string(),
+        description: "Record keyboard and mouse input during PlayMode".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "projectPath": { "type": "string", "description": "Absolute path to the Unity project root" },
+                "action": { "type": "string", "enum": ["start", "stop"], "description": "Recording action" }
+            },
+            "required": ["projectPath", "action"]
+        }),
+        handler: unity_record_input_handler,
+    });
+
+    server.register_tool(McpTool {
+        name: "unity_replay_input".to_string(),
+        description: "Replay recorded input during PlayMode with frame-precise injection".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "projectPath": { "type": "string", "description": "Absolute path to the Unity project root" },
+                "action": { "type": "string", "enum": ["start", "stop", "status"], "description": "Replay action" },
+                "file": { "type": "string", "description": "Path to recorded input JSON file" }
+            },
+            "required": ["projectPath", "action"]
+        }),
+        handler: unity_replay_input_handler,
+    });
+
     server.register_resource(McpResource {
         uri: "unity://context".to_string(),
         name: "Unity Context".to_string(),
@@ -583,6 +729,241 @@ fn unity_get_logs_handler(arguments: &Value) -> anyhow::Result<Vec<McpContent>> 
         ],
         arguments,
     )
+}
+
+fn unity_control_play_mode_handler(arguments: &Value) -> anyhow::Result<Vec<McpContent>> {
+    let project = project_path(arguments)?;
+    let action = arguments
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("status");
+    let project_path = project.to_string_lossy().to_string();
+    let mut cmd_args = vec![
+        "unity".to_string(),
+        "control-play-mode".to_string(),
+        "--project-path".to_string(),
+        project_path,
+        "--action".to_string(),
+        action.to_string(),
+    ];
+    if arguments.get("wait").and_then(Value::as_bool) == Some(true) {
+        cmd_args.push("--wait".to_string());
+    }
+    let cmd_args = cmd_args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_lux_command(&cmd_args, arguments)
+}
+
+fn unity_clear_console_handler(arguments: &Value) -> anyhow::Result<Vec<McpContent>> {
+    let project = project_path(arguments)?;
+    run_lux_command(
+        &[
+            "unity",
+            "clear-console",
+            "--project-path",
+            &project.to_string_lossy(),
+        ],
+        arguments,
+    )
+}
+
+fn unity_focus_window_handler(arguments: &Value) -> anyhow::Result<Vec<McpContent>> {
+    let project = project_path(arguments)?;
+    run_lux_command(
+        &[
+            "unity",
+            "focus-window",
+            "--project-path",
+            &project.to_string_lossy(),
+        ],
+        arguments,
+    )
+}
+
+fn unity_find_game_objects_handler(arguments: &Value) -> anyhow::Result<Vec<McpContent>> {
+    let project = project_path(arguments)?;
+    let project_path = project.to_string_lossy().to_string();
+    let mut cmd_args = vec![
+        "unity".to_string(),
+        "find-game-objects".to_string(),
+        "--project-path".to_string(),
+        project_path,
+    ];
+
+    if let Some(value) = arguments.get("searchMode").and_then(Value::as_str) {
+        cmd_args.extend(["--search-mode".to_string(), value.to_string()]);
+    }
+    if let Some(value) = arguments.get("name").and_then(Value::as_str) {
+        cmd_args.extend(["--name".to_string(), value.to_string()]);
+    }
+    if let Some(value) = arguments.get("regex").and_then(Value::as_str) {
+        cmd_args.extend(["--regex".to_string(), value.to_string()]);
+    }
+    if let Some(value) = arguments.get("path").and_then(Value::as_str) {
+        cmd_args.extend(["--path".to_string(), value.to_string()]);
+    }
+    if let Some(value) = arguments.get("component").and_then(Value::as_str) {
+        cmd_args.extend(["--component".to_string(), value.to_string()]);
+    }
+    if let Some(value) = arguments.get("tag").and_then(Value::as_str) {
+        cmd_args.extend(["--tag".to_string(), value.to_string()]);
+    }
+    if let Some(value) = arguments.get("layer").and_then(Value::as_str) {
+        cmd_args.extend(["--layer".to_string(), value.to_string()]);
+    }
+    if let Some(value) = arguments.get("activeState").and_then(Value::as_str) {
+        cmd_args.extend(["--active-state".to_string(), value.to_string()]);
+    }
+    if let Some(value) = arguments.get("inlineLimit").and_then(Value::as_i64) {
+        cmd_args.extend(["--inline-limit".to_string(), value.to_string()]);
+    }
+
+    let cmd_args = cmd_args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_lux_command(&cmd_args, arguments)
+}
+
+fn unity_simulate_keyboard_handler(arguments: &Value) -> anyhow::Result<Vec<McpContent>> {
+    let project = project_path(arguments)?;
+    let action = arguments
+        .get("action")
+        .and_then(Value::as_str)
+        .context("action is required")?;
+    let key = arguments
+        .get("key")
+        .and_then(Value::as_str)
+        .context("key is required")?;
+    let project_path = project.to_string_lossy().to_string();
+    let mut cmd_args = vec![
+        "unity".to_string(),
+        "simulate-keyboard".to_string(),
+        "--project-path".to_string(),
+        project_path,
+        "--action".to_string(),
+        action.to_string(),
+        "--key".to_string(),
+        key.to_string(),
+    ];
+    if let Some(value) = arguments.get("durationMs").and_then(Value::as_i64) {
+        cmd_args.extend(["--duration-ms".to_string(), value.to_string()]);
+    }
+    let cmd_args = cmd_args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_lux_command(&cmd_args, arguments)
+}
+
+fn unity_simulate_mouse_input_handler(arguments: &Value) -> anyhow::Result<Vec<McpContent>> {
+    let project = project_path(arguments)?;
+    let action = arguments
+        .get("action")
+        .and_then(Value::as_str)
+        .context("action is required")?;
+    let project_path = project.to_string_lossy().to_string();
+    let mut cmd_args = vec![
+        "unity".to_string(),
+        "simulate-mouse-input".to_string(),
+        "--project-path".to_string(),
+        project_path,
+        "--action".to_string(),
+        action.to_string(),
+    ];
+
+    if let Some(value) = arguments.get("button").and_then(Value::as_str) {
+        cmd_args.extend(["--button".to_string(), value.to_string()]);
+    }
+    if let Some(value) = arguments.get("deltaX").and_then(Value::as_f64) {
+        cmd_args.extend(["--delta-x".to_string(), value.to_string()]);
+    }
+    if let Some(value) = arguments.get("deltaY").and_then(Value::as_f64) {
+        cmd_args.extend(["--delta-y".to_string(), value.to_string()]);
+    }
+    if let Some(value) = arguments.get("scrollX").and_then(Value::as_f64) {
+        cmd_args.extend(["--scroll-x".to_string(), value.to_string()]);
+    }
+    if let Some(value) = arguments.get("scrollY").and_then(Value::as_f64) {
+        cmd_args.extend(["--scroll-y".to_string(), value.to_string()]);
+    }
+    if let Some(value) = arguments.get("durationMs").and_then(Value::as_i64) {
+        cmd_args.extend(["--duration-ms".to_string(), value.to_string()]);
+    }
+    if let Some(value) = arguments.get("steps").and_then(Value::as_i64) {
+        cmd_args.extend(["--steps".to_string(), value.to_string()]);
+    }
+
+    let cmd_args = cmd_args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_lux_command(&cmd_args, arguments)
+}
+
+fn unity_simulate_mouse_ui_handler(arguments: &Value) -> anyhow::Result<Vec<McpContent>> {
+    let project = project_path(arguments)?;
+    let action = arguments
+        .get("action")
+        .and_then(Value::as_str)
+        .context("action is required")?;
+    let x = arguments
+        .get("x")
+        .and_then(Value::as_f64)
+        .context("x is required")?;
+    let y = arguments
+        .get("y")
+        .and_then(Value::as_f64)
+        .context("y is required")?;
+    let project_path = project.to_string_lossy().to_string();
+    let mut cmd_args = vec![
+        "unity".to_string(),
+        "simulate-mouse-ui".to_string(),
+        "--project-path".to_string(),
+        project_path,
+        "--action".to_string(),
+        action.to_string(),
+        "--x".to_string(),
+        x.to_string(),
+        "--y".to_string(),
+        y.to_string(),
+    ];
+    if let Some(value) = arguments.get("durationMs").and_then(Value::as_i64) {
+        cmd_args.extend(["--duration-ms".to_string(), value.to_string()]);
+    }
+    let cmd_args = cmd_args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_lux_command(&cmd_args, arguments)
+}
+
+fn unity_record_input_handler(arguments: &Value) -> anyhow::Result<Vec<McpContent>> {
+    let project = project_path(arguments)?;
+    let action = arguments
+        .get("action")
+        .and_then(Value::as_str)
+        .context("action is required")?;
+    let project_path = project.to_string_lossy().to_string();
+    let cmd_args = vec![
+        "unity".to_string(),
+        "record-input".to_string(),
+        "--project-path".to_string(),
+        project_path,
+        "--action".to_string(),
+        action.to_string(),
+    ];
+    let cmd_args = cmd_args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_lux_command(&cmd_args, arguments)
+}
+
+fn unity_replay_input_handler(arguments: &Value) -> anyhow::Result<Vec<McpContent>> {
+    let project = project_path(arguments)?;
+    let action = arguments
+        .get("action")
+        .and_then(Value::as_str)
+        .context("action is required")?;
+    let project_path = project.to_string_lossy().to_string();
+    let mut cmd_args = vec![
+        "unity".to_string(),
+        "replay-input".to_string(),
+        "--project-path".to_string(),
+        project_path,
+        "--action".to_string(),
+        action.to_string(),
+    ];
+    if let Some(value) = arguments.get("file").and_then(Value::as_str) {
+        cmd_args.extend(["--file".to_string(), value.to_string()]);
+    }
+    let cmd_args = cmd_args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_lux_command(&cmd_args, arguments)
 }
 
 fn skill_list_handler(_: &Value) -> anyhow::Result<Vec<McpContent>> {
@@ -958,12 +1339,107 @@ mod tests {
             &create_lux_mcp_server(),
             r#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#,
         );
-        assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 13);
+        assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 22);
 
         let response = response_json(
             &create_lux_mcp_server(),
             r#"{"jsonrpc":"2.0","id":8,"method":"resources/list"}"#,
         );
         assert_eq!(response["result"]["resources"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn create_lux_mcp_server_registers_twenty_two_tools() {
+        let response = response_json(
+            &create_lux_mcp_server(),
+            r#"{"jsonrpc":"2.0","id":9,"method":"tools/list"}"#,
+        );
+
+        assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 22);
+    }
+
+    #[test]
+    fn create_lux_mcp_server_includes_new_unity_tools() {
+        let response = response_json(
+            &create_lux_mcp_server(),
+            r#"{"jsonrpc":"2.0","id":10,"method":"tools/list"}"#,
+        );
+        let tools = response["result"]["tools"].as_array().unwrap();
+        let tool_names: Vec<&str> = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+
+        for name in [
+            "unity_control_play_mode",
+            "unity_clear_console",
+            "unity_focus_window",
+            "unity_find_game_objects",
+            "unity_simulate_keyboard",
+            "unity_simulate_mouse_input",
+            "unity_simulate_mouse_ui",
+            "unity_record_input",
+            "unity_replay_input",
+        ] {
+            assert!(tool_names.contains(&name), "missing tool: {name}");
+        }
+    }
+
+    #[test]
+    fn create_lux_mcp_server_existing_tools_unchanged() {
+        let response = response_json(
+            &create_lux_mcp_server(),
+            r#"{"jsonrpc":"2.0","id":11,"method":"tools/list"}"#,
+        );
+        let tools = response["result"]["tools"].as_array().unwrap();
+        let tool_names: Vec<&str> = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+
+        for name in [
+            "unity_compile",
+            "unity_test",
+            "unity_screenshot",
+            "unity_hierarchy",
+            "unity_dynamic_code",
+            "unity_get_logs",
+            "skill_list",
+            "skill_info",
+            "ai_log_recent",
+            "lux_context",
+            "selected_file_context",
+            "execute_shell",
+            "execute_git",
+        ] {
+            assert!(tool_names.contains(&name), "missing tool: {name}");
+        }
+    }
+
+    #[test]
+    fn new_tool_schemas_have_required_fields() {
+        let response = response_json(
+            &create_lux_mcp_server(),
+            r#"{"jsonrpc":"2.0","id":12,"method":"tools/list"}"#,
+        );
+        let tools = response["result"]["tools"].as_array().unwrap();
+
+        for name in [
+            "unity_control_play_mode",
+            "unity_clear_console",
+            "unity_focus_window",
+            "unity_find_game_objects",
+            "unity_simulate_keyboard",
+            "unity_simulate_mouse_input",
+            "unity_simulate_mouse_ui",
+            "unity_record_input",
+            "unity_replay_input",
+        ] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool["name"].as_str() == Some(name))
+                .expect("tool present");
+            assert!(tool["inputSchema"]["properties"]["projectPath"].is_object());
+        }
     }
 }
