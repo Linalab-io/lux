@@ -2,18 +2,34 @@ import { useState } from 'react'
 import 'reactflow/dist/style.css'
 import 'xterm/css/xterm.css'
 import './App.css'
+import './components/dashboard/dashboard.css'
 import { AITerminal } from './components/AITerminal'
 import { NodeEditor } from './components/NodeEditor'
 import type { ConnectionState, LuxEventEnvelope, ViewMode } from './types'
 import { SessionManager } from './components/SessionManager'
 import { RemoteViewer } from './components/RemoteViewer'
 import { AITimeline } from './components/AITimeline'
+import { DashboardLayout } from './components/dashboard/DashboardLayout'
+
 function App() {
-  const [activeView, setActiveView] = useState<ViewMode>('nodes')
+  const [activeView, setActiveView] = useState<ViewMode>('dashboard')
   const [events, setEvents] = useState<LuxEventEnvelope[]>([])
   const [connectionState, setConnectionState] = useState<ConnectionState>('idle')
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const latestEvent = events[0]
+
+  if (activeView === 'dashboard') {
+    return (
+      <main className="app-shell" style={{ padding: 0, width: '100vw', height: '100vh', maxWidth: 'none' }}>
+        <DashboardLayout />
+        <div style={{ position: 'absolute', bottom: '16px', right: '16px', zIndex: 100 }}>
+          <button onClick={() => setActiveView('nodes')} style={{ background: 'rgba(0,0,0,0.5)', border: '1px solid var(--line)' }}>
+            Exit Dashboard
+          </button>
+        </div>
+      </main>
+    )
+  }
 
   return (
     <main className="app-shell">
@@ -29,6 +45,9 @@ function App() {
       </header>
 
       <nav className="view-tabs" aria-label="Lux workspace views">
+        <button className="" onClick={() => setActiveView('dashboard')}>
+          Dashboard
+        </button>
         <button className={activeView === 'nodes' ? 'active' : ''} onClick={() => setActiveView('nodes')}>
           Node editor
         </button>

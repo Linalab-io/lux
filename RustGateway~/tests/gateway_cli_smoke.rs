@@ -1,4 +1,5 @@
 use serde_json::Value;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
     fs,
@@ -2464,9 +2465,17 @@ fn create_test_unity_project(prefix: &str, include_lux_package: bool) -> std::pa
 }
 
 fn make_executable(path: &Path) {
-    let mut permissions = fs::metadata(path).expect("read metadata").permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(path, permissions).expect("set executable");
+    #[cfg(unix)]
+    {
+        let mut permissions = fs::metadata(path).expect("read metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("set executable");
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
 }
 
 fn reserve_local_port() -> u16 {

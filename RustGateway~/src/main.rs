@@ -2,20 +2,24 @@ pub mod addon_auth;
 pub mod addon_routes;
 pub mod addon_store;
 pub mod ai_log;
+pub mod config;
 pub mod cross_platform;
 mod mcp;
+pub mod project;
 mod protocol;
 mod server;
 pub mod session;
+pub mod unity_hub;
 pub mod unity_launch;
 pub mod visual_regression;
 
 use std::{
     fs,
     io::{BufRead, BufReader, ErrorKind, Read, Write},
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
+    sync::OnceLock,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -25,11 +29,16 @@ use clap_complete::{generate, shells::Shell};
 use protocol::EventEnvelope;
 use serde_json::{json, Value};
 
+static CONFIG_PATH_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
 #[derive(Parser, Debug)]
 #[command(name = "lux")]
 #[command(version)]
 #[command(about = "Lux CLI — Unity batch mode automation for Neon Glitch")]
-struct Cli {
+pub struct Cli {
+    /// Custom Lux config file path
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -48,13 +57,36 @@ enum Command {
     Session(SessionArgs),
     Install(InstallArgs),
     Addon(AddonArgs),
+    Config(ConfigArgs),
+    /// Launch the Lux desktop dashboard
+    Gui,
     Schema,
     /// Generate shell completion scripts
     Completion {
         /// Shell type to generate completions for
-        #[arg(long, value_enum)]
-        shell: Option<Shell>,
+        #[arg(value_enum)]
+        shell: Shell,
     },
+}
+
+#[derive(Parser, Debug)]
+struct ConfigArgs {
+    #[command(subcommand)]
+    action: ConfigAction,
+}
+
+#[derive(Subcommand, Debug)]
+enum ConfigAction {
+    /// Display current effective config
+    Show,
+    /// Set a config value
+    Set { key: String, value: String },
+    /// Get a config value
+    Get { key: String },
+    /// Show config file path
+    Path,
+    /// Open config file in the default editor
+    Edit,
 }
 
 #[derive(Parser, Debug)]
@@ -676,17 +708,17 @@ impl PlayModeAction {
 
 #[derive(Parser, Debug)]
 struct ServeArgs {
-    #[arg(long, env = "LUX_GATEWAY_HOST", default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST))]
-    host: IpAddr,
-    #[arg(long, env = "LUX_GATEWAY_PORT", default_value_t = 17340)]
-    port: u16,
+    #[arg(long, env = "LUX_GATEWAY_HOST")]
+    host: Option<IpAddr>,
+    #[arg(long, env = "LUX_GATEWAY_PORT")]
+    port: Option<u16>,
     #[arg(long, env = "LUX_GATEWAY_TOKEN")]
-    token: String,
+    token: Option<String>,
     #[arg(long, env = "LUX_GATEWAY_HISTORY", default_value_t = 256)]
     history_capacity: usize,
     /// Minutes without HTTP or WebSocket activity before graceful shutdown (0 disables)
-    #[arg(long, env = "LUX_GATEWAY_IDLE_TIMEOUT", default_value_t = 30)]
-    idle_timeout: u64,
+    #[arg(long, env = "LUX_GATEWAY_IDLE_TIMEOUT")]
+    idle_timeout: Option<u64>,
     /// Unity project root used for project-bound gateway APIs
     #[arg(long, env = "LUX_PROJECT_PATH")]
     project_path: Option<PathBuf>,
@@ -777,8 +809,15 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    match Cli::parse().command {
-        Command::Serve(args) => serve(args).await,
+    let cli = Cli::parse();
+    if let Some(path) = cli.config.clone() {
+        let _ = CONFIG_PATH_OVERRIDE.set(path);
+    }
+    let config = load_active_config()?;
+    let config = config::merge_with_cli(&config, &cli);
+
+    match cli.command {
+        Command::Serve(args) => serve(args, &config).await,
         Command::Unity(args) => run_lux_unity_command(args),
         Command::Skill(args) => run_skill_command(args),
         Command::AiLog(args) => run_ai_log_command(args),
@@ -790,6 +829,8 @@ async fn main() -> anyhow::Result<()> {
         Command::Session(args) => run_session_command(args),
         Command::Install(args) => run_install_command(args),
         Command::Addon(args) => run_addon_command(args),
+        Command::Config(args) => run_config_command(args, &config),
+        Command::Gui => run_gui_command(),
         Command::Schema => {
             println!(
                 "{}",
@@ -798,24 +839,171 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Completion { shell } => {
-            let shell = shell.unwrap_or_else(|| {
-                if std::env::var_os("SHELL")
-                    .map(|s| s.to_string_lossy().contains("zsh"))
-                    .unwrap_or(false)
-                {
-                    Shell::Zsh
-                } else if std::env::var_os("PSModulePath").is_some() {
-                    Shell::PowerShell
-                } else {
-                    Shell::Bash
-                }
-            });
             let mut cmd = Cli::command();
             let name = cmd.get_name().to_string();
             generate(shell, &mut cmd, name, &mut std::io::stdout());
             Ok(())
         }
     }
+}
+
+fn run_gui_command() -> anyhow::Result<()> {
+    let tauri_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src-tauri")
+        .join("Cargo.toml");
+    let status = ProcessCommand::new("cargo")
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&tauri_manifest)
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to launch Lux GUI from {}",
+                tauri_manifest.display()
+            )
+        })?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("Lux GUI exited with status {status}")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// lux config
+// ---------------------------------------------------------------------------
+
+fn active_config_path() -> PathBuf {
+    CONFIG_PATH_OVERRIDE
+        .get()
+        .cloned()
+        .unwrap_or_else(config::config_path)
+}
+
+fn load_active_config() -> anyhow::Result<config::LuxConfig> {
+    config::load_from_path(active_config_path())
+}
+
+fn save_active_config(config: &config::LuxConfig) -> anyhow::Result<()> {
+    config::save_to_path(active_config_path(), config)
+}
+
+fn run_config_command(
+    args: ConfigArgs,
+    effective_config: &config::LuxConfig,
+) -> anyhow::Result<()> {
+    match args.action {
+        ConfigAction::Show => {
+            println!("{}", toml::to_string_pretty(effective_config)?);
+            Ok(())
+        }
+        ConfigAction::Set { key, value } => {
+            let mut stored_config = load_active_config()?;
+            set_config_value(&mut stored_config, &key, &value)?;
+            save_active_config(&stored_config)?;
+            Ok(())
+        }
+        ConfigAction::Get { key } => print_config_value(effective_config, &key),
+        ConfigAction::Path => {
+            println!("{}", active_config_path().display());
+            Ok(())
+        }
+        ConfigAction::Edit => edit_config_file(),
+    }
+}
+
+fn set_config_value(config: &mut config::LuxConfig, key: &str, value: &str) -> anyhow::Result<()> {
+    match key {
+        "unity.hub_path" => config.unity.hub_path = Some(PathBuf::from(value)),
+        "unity.editor_path" => config.unity.editor_path = Some(PathBuf::from(value)),
+        "unity.custom_install_path" => {
+            config.unity.custom_install_path = Some(PathBuf::from(value))
+        }
+        "server.host" => config.server.host = value.to_string(),
+        "server.port" => config.server.port = value.parse().context("server.port must be a u16")?,
+        "server.idle_timeout_secs" => {
+            config.server.idle_timeout_secs = value
+                .parse()
+                .context("server.idle_timeout_secs must be a u64")?
+        }
+        "server.token" => config.server.token = Some(value.to_string()),
+        "general.project_root" => config.general.project_root = Some(PathBuf::from(value)),
+        "general.log_level" => config.general.log_level = value.to_string(),
+        _ => bail!("unknown config key: {key}"),
+    }
+    Ok(())
+}
+
+fn print_config_value(config: &config::LuxConfig, key: &str) -> anyhow::Result<()> {
+    match key {
+        "unity.hub_path" => print_optional_path(&config.unity.hub_path),
+        "unity.editor_path" => print_optional_path(&config.unity.editor_path),
+        "unity.custom_install_path" => print_optional_path(&config.unity.custom_install_path),
+        "server.host" => println!("{}", config.server.host),
+        "server.port" => println!("{}", config.server.port),
+        "server.idle_timeout_secs" => println!("{}", config.server.idle_timeout_secs),
+        "server.token" => print_optional_string(&config.server.token),
+        "general.project_root" => print_optional_path(&config.general.project_root),
+        "general.log_level" => println!("{}", config.general.log_level),
+        _ => bail!("unknown config key: {key}"),
+    }
+    Ok(())
+}
+
+fn print_optional_path(value: &Option<PathBuf>) {
+    if let Some(value) = value {
+        println!("{}", value.display());
+    }
+}
+
+fn print_optional_string(value: &Option<String>) {
+    if let Some(value) = value {
+        println!("{value}");
+    }
+}
+
+fn edit_config_file() -> anyhow::Result<()> {
+    let path = active_config_path();
+    if !path.exists() {
+        save_active_config(&config::LuxConfig::default())?;
+    }
+
+    let editor = std::env::var_os("VISUAL").or_else(|| std::env::var_os("EDITOR"));
+    if let Some(editor) = editor {
+        let status = ProcessCommand::new(editor)
+            .arg(&path)
+            .status()
+            .with_context(|| format!("failed to open editor for {}", path.display()))?;
+        if !status.success() {
+            bail!("editor exited with status {status}");
+        }
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = ProcessCommand::new("cmd");
+        command.args(["/C", "start", "", &path.display().to_string()]);
+        command
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = ProcessCommand::new("open");
+        command.arg(&path);
+        command
+    };
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let mut command = ProcessCommand::new("xdg-open");
+        command.arg(&path);
+        command
+    };
+
+    command
+        .status()
+        .with_context(|| format!("failed to open config file {}", path.display()))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1465,6 +1653,21 @@ fn update_skill(args: SkillUpdateArgs) -> anyhow::Result<()> {
         eprintln!("Error: Skill has no source URL configured");
         std::process::exit(1);
     };
+
+    if entry.directory_path.exists() {
+        fs::remove_dir_all(&entry.directory_path).with_context(|| {
+            format!(
+                "Failed to clear skill directory: {}",
+                entry.directory_path.display()
+            )
+        })?;
+    }
+    fs::create_dir_all(&entry.directory_path).with_context(|| {
+        format!(
+            "Failed to recreate skill directory: {}",
+            entry.directory_path.display()
+        )
+    })?;
 
     install_skill_from_source(source, &entry.directory_path)?;
     println!(
@@ -4139,6 +4342,14 @@ pub struct UnityLaunchTarget {
 }
 
 pub fn resolve_unity_launch_target(project_root: &Path) -> anyhow::Result<UnityLaunchTarget> {
+    let config = load_active_config()?;
+    if let Some(editor) = config.unity.editor_path.as_ref() {
+        return Ok(UnityLaunchTarget {
+            executable: editor.clone(),
+            prefix_args: Vec::new(),
+        });
+    }
+
     if let Some(editor) = std::env::var_os("LUX_UNITY_EDITOR") {
         return Ok(UnityLaunchTarget {
             executable: PathBuf::from(editor),
@@ -4163,14 +4374,63 @@ pub fn resolve_unity_launch_target(project_root: &Path) -> anyhow::Result<UnityL
 
     #[cfg(target_os = "windows")]
     {
-        let hub_editor = PathBuf::from(format!(
+        let mut candidates = Vec::new();
+
+        if let Some(hub_path) = config.unity.hub_path.as_ref() {
+            candidates.push(
+                unity_hub::editor_install_path_for_hub(hub_path)
+                    .join(&version)
+                    .join("Editor")
+                    .join("Unity.exe"),
+            );
+        }
+
+        if let Some(install_path) = config.unity.custom_install_path.as_ref() {
+            candidates.push(install_path.join(&version).join("Editor").join("Unity.exe"));
+        }
+
+        if let Some(hub_path) = std::env::var_os("LUX_UNITY_HUB_PATH") {
+            candidates.push(
+                PathBuf::from(hub_path)
+                    .join("Editor")
+                    .join(&version)
+                    .join("Editor")
+                    .join("Unity.exe"),
+            );
+        }
+
+        candidates.push(PathBuf::from(format!(
             "C:\\Program Files\\Unity\\Hub\\Editor\\{version}\\Editor\\Unity.exe"
-        ));
-        if hub_editor.is_file() {
-            return Ok(UnityLaunchTarget {
-                executable: hub_editor,
-                prefix_args: Vec::new(),
-            });
+        )));
+        candidates.push(PathBuf::from(format!(
+            "C:\\Program Files\\Unity Hub\\Editor\\{version}\\Editor\\Unity.exe"
+        )));
+
+        for hub_editor in candidates {
+            if hub_editor.is_file() {
+                return Ok(UnityLaunchTarget {
+                    executable: hub_editor,
+                    prefix_args: Vec::new(),
+                });
+            }
+        }
+
+        use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
+        let current_user = RegKey::predef(HKEY_CURRENT_USER);
+        if let Ok(unity_editor_key) =
+            current_user.open_subkey("Software\\Unity Technologies\\Unity Editor 5.x")
+        {
+            let value_name = format!("{version}_Location_x64");
+            if let Ok(editor_path) = unity_editor_key.get_value::<String, _>(&value_name) {
+                let editor_path = PathBuf::from(editor_path);
+                if editor_path.is_file() {
+                    return Ok(UnityLaunchTarget {
+                        executable: editor_path,
+                        prefix_args: Vec::new(),
+                    });
+                }
+            }
         }
     }
 
@@ -4220,10 +4480,24 @@ pub fn read_unity_editor_version(project_root: &Path) -> anyhow::Result<String> 
 // lux serve — WebSocket gateway
 // ---------------------------------------------------------------------------
 
-async fn serve(args: ServeArgs) -> anyhow::Result<()> {
-    let addr = SocketAddr::new(args.host, args.port);
+async fn serve(args: ServeArgs, config: &config::LuxConfig) -> anyhow::Result<()> {
+    let host = args.host.unwrap_or(
+        config
+            .server
+            .host
+            .parse()
+            .context("server.host must be an IP address")?,
+    );
+    let port = args.port.unwrap_or(config.server.port);
+    let token = args
+        .token
+        .or_else(|| config.server.token.clone())
+        .or_else(|| std::env::var("LUX_TOKEN").ok())
+        .unwrap_or_default();
+    let addr = SocketAddr::new(host, port);
     let project_root = args
         .project_path
+        .or_else(|| config.general.project_root.clone())
         .map(|path| {
             let normalized = cross_platform::normalize_path_buf(path);
             normalized.canonicalize().with_context(|| {
@@ -4235,7 +4509,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         })
         .transpose()?;
     let state = server::GatewayState::new(server::GatewayConfig {
-        token: args.token,
+        token,
         history_capacity: args.history_capacity,
         project_root,
         addon_auth: crate::addon_auth::AddonAuthConfig {
@@ -4244,7 +4518,11 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             github_client_secret: std::env::var("LUX_GITHUB_CLIENT_SECRET").ok(),
         },
     });
-    let idle_timeout = args.idle_timeout.checked_mul(60).map(Duration::from_secs);
+    let idle_timeout = args
+        .idle_timeout
+        .and_then(|minutes| minutes.checked_mul(60))
+        .unwrap_or(config.server.idle_timeout_secs);
+    let idle_timeout = Some(Duration::from_secs(idle_timeout));
     let app = server::router(state.clone());
     let listener = tokio::net::TcpListener::bind(addr)
         .await

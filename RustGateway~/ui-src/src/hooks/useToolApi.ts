@@ -7,7 +7,6 @@ export function useToolApi() {
     if (!res.ok) throw new Error(`Failed to fetch tools: ${res.status} ${res.statusText}`)
     return res.json()
   }, [])
-  }, [])
 
   const createSession = useCallback(async (toolType: string): Promise<ToolSession> => {
     const res = await fetch('/api/tools/sessions', {

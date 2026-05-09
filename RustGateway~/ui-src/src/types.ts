@@ -1,6 +1,8 @@
 import type { Edge, Node } from 'reactflow'
 
-export type ViewMode = 'nodes' | 'terminal' | 'remote' | 'timeline'
+export type ViewMode = 'nodes' | 'terminal' | 'remote' | 'timeline' | 'dashboard'
+
+export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'error' | 'closed'
 
 export type LuxEventEnvelope = {
   schema_version: number
