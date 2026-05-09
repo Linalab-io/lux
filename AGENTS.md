@@ -43,6 +43,14 @@ LUX is a unified Unity Editor AI adapter and automation toolkit. It is an indepe
 - Core skills are in `Skills/`. They cannot be removed.
 - Structure: `manifest.json`, `SKILL.md`, and `references/`.
 
+## Reference Projects
+
+| Project | URL | Purpose |
+| :--- | :--- | :--- |
+| Unity-MCP | https://github.com/IvanMurzak/Unity-MCP | Unity Editor ↔ MCP integration reference; tool inventory for scene/asset/build automation |
+| Unity AI Assistant | https://docs.unity3d.com/Packages/com.unity.ai.assistant | Official Unity AI assistant framework; API surface for editor automation |
+| unity-cli-loop | https://github.com/hatayama/unity-cli-loop | Original uloop reference project (346 ⭐); CLI parity baseline |
+
 ## Anti-Patterns (DO NOT)
 - Do not remove the `Lux` prefix from C# class names.
 - Do not add mock or fallback data to API hooks.

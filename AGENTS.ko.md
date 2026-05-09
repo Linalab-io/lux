@@ -43,6 +43,14 @@ LUX는 통합 유니티 에디터 AI 어댑터이자 자동화 툴킷입니다. 
 - 핵심 스킬은 `Skills/`에 위치하며 삭제할 수 없습니다.
 - 구조: `manifest.json`, `SKILL.md`, `references/`로 구성됩니다.
 
+## 참고 프로젝트
+
+| 프로젝트 | URL | 용도 |
+| :--- | :--- | :--- |
+| Unity-MCP | https://github.com/IvanMurzak/Unity-MCP | Unity Editor ↔ MCP 연동 레퍼런스; 씬/에셋/빌드 자동화 툴 인벤토리 |
+| Unity AI Assistant | https://docs.unity3d.com/Packages/com.unity.ai.assistant | 공식 Unity AI 어시스턴트 프레임워크; 에디터 자동화 API |
+| unity-cli-loop | https://github.com/hatayama/unity-cli-loop | 원본 uloop 레퍼런스 프로젝트 (346 ⭐); CLI 패리티 베이스라인 |
+
 ## 안티 패턴 (하지 마세요)
 - C# 클래스 이름에서 `Lux` 접두사를 제거하지 마세요.
 - API 훅에 mock 데이터나 fallback 데이터를 추가하지 마세요.
