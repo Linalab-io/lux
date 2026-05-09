@@ -1,265 +1,678 @@
 ---
-name: ldp-decision-protocol
-description: "Lazy-load when ethical verification, AI-driven Unity automation guardrails, or LDP (Lina Decision Protocol) checks are needed before/after Lux operations. Bridges LDP's 5-step decision framework with Lux's compile/test/build pipeline."
+name: lux-integration
+description: "Lux 통합 어댑터 템플릿 — LDP(Lina Decision Protocol) 검증 엔진과 외부 Lux 시스템 간의 인터페이스 계약(Interface Contract)을 정의한다. Lux 소스 코드 접근 없이 추상 구조로 설계된 Adapter 패턴 기반 통합 가이드. 데이터 흐름, API 계약, 에러 핸들링, 검증 파이프라인 연동 방식을 포함한다."
+version: 1.0.0
+author: Linalab Game Dev
+license: MIT
+tags: [game-dev, ldp]
+related_skills: [lina-decision-protocol]
+metadata:
+  hermes:
+    tags: [game-dev, lux-integration, ldp, adapter-pattern, interface-contract, verification-engine, integration]
+    related_skills: [lina-decision-protocol, game-ethics-review, game-analytics-dashboard]
 ---
 
-# LDP Decision Protocol (LDP 통합 스킬)
+# Lux 통합 어댑터 (Lux Integration Adapter)
 
-## [한국어] LDP 결정 프로토콜 — Lux Unity 자동화 윤리 검증
+> **핵심 문장:**
+> \"좋은 인터페이스는 구현체가 무엇인지 알 필요 없이 '무엇을 할 수 있는지'만 말해주며, 훌륭한 인터페이스는 그 계약이 깨졌을 때 양쪽 모두 누구 잘못인지 명확하게 알 수 있게 만든다.\"
 
-### LDP란 무엇인가?
+**LDP 검증 엔진과 Lux 시스템 간의 추상 인터페이스 계약을 정의하는 Adapter 패턴 기반 통합 템플릿입니다. Lux 소스 코드에 직접 의존하지 않고 계약(Contract) 수준에서 통합을 가능하게 합니다.**
 
-**Lina Decision Protocol (LDP)**은 AI 주도 의사결정에 대한 구조화된 **윤리 검증 프레임워크**입니다. 5단계 프로토콜(Acknowledge → Numbers → Ethics → Termination → Approval)을 통해 모든 자동화된 의사결정이 투명하고, 책임 있고, 재현 가능하도록 보장합니다.
+## When to Use
 
-Lux가 AI 에이전트를 통해 Unity 편집기를 자동화할 때, LDP는 다음을 제공합니다:
+**Load this skill when:**
+- LDP 검증 엔진과 Lux 시스템 간의 통합 어댑터를 개발할 때
+- Lux와 LDP 간의 데이터 교환 포맷/API 계약을 정의해야 할 때
+- Lux 이벤트/데이터를 LDP 검증 파이프라인에 공급하려 할 때
+- LDP 검증 결과를 Lux 쪽으로 다시 전달하는 리턴 채널을 설계할 때
+- Lux 버전 변경/업데이트 시 호환성을 검증해야 할 때
 
-- **Pre-build 가드레일**: 컴파일/빌드/테스트 실행 전 윤리적 적합성 검증
-- **Post-operation 검증**: 자동화 작업 완료 후 결과물의 안전성과 품질 심사
-- **결정 감사 추적**: 모든 AI 의사결정에 대한 기록과 계보(lineage) 관리
+**Don't use for:**
+- Lux 내부 구현 상세 분석/수정 → Lux 팀 문서 참조
+- LDP 프로토콜 자체의 수정 → `lina-decision-protocol`
+- 게임 클라이언트 SDK 통합 → 해당 플랫폼별 integration guide
 
-### Lux가 LDP가 필요한 이유
+## Prerequisites
 
-| 문제 | LDP 해결책 |
-|------|-----------|
-| AI가 생성한 C# 코드가 프로젝트를 망칠 수 있음 | Step3 Ethics: 코드 변경 영향 범위 검증 |
-| 자동화 빌드가 예상치 못한 asset 변경을 일으킴 | Step4 Termination: 롤백 계획 및 중단 조건 명시 |
-| PlayMode 테스트에서 플레이어 데이터 유출 위험 | Step2 Numbers: 데이터 흐름 정량화 |
-| AI 결정에 대한 책임 소재 불명확 | Step5 Approval: 서명(stakeholder sign-off) 기록 |
-| 반복적인 자동화 작업에서 누적되는 드리프트 | Step1 Acknowledge: 목표-결과 간 편차 측정 |
+1. **LDP 스킬 로드됨** — LDP §0-§12 전체 프로세스와 B/C category 검증 로직 이해
+2. **Lux 시스템의 공개 API/Event 스펙** — Lux가 외부에 노출하는 인터페이스 문서 (내부 소스 불필요)
+3. **통합 목표 명확화** — 어떤 LDP 검증 단계(SS1-SS6)와 Lux의 어떤 기능을 연결할 것인지
+4. **기본적인 Adapter/Interface 패턴 이해** — 추상화 계약 vs 구현체 분리 원칙
 
-### LDP 5단계 → Lux 워크플로우 매핑
+## Procedure
+
+### Step 1: 통합 목적 및 범위 정의 (Integration Scope)
+
+#### 1.1 통합 목적 매트릭스
+
+| 통합 방향 | 목적 | 예시 |
+|----------|------|------|
+| **Lux → LDP** | Lux 데이터를 LDP 검증 입력으로 공급 | Lux 유저 행동 데이터 → LDP B-category 분석 |
+| **LDP → Lux** | LDP 검증 결과를 Lux 액션으로 전달 | LDP REJECT 판정 → Lux 자동 브레이크/경고 |
+| **Bidirectional** | 양방향 실시간 피드백 루프 | Lux A/B Test 결과 ↔ LDP 윤리 재검증 |
+
+#### 1.2 Scope 경계 명확화
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    LDP 5-Step Protocol                              │
-│                                                                     │
-│  SS1-SS3  ACKNOWLEDGE   ──→  lux unity context (작업 전 상태 파악)    │
-│  SS4-SS5  NUMBERS       ──→  lux compile --json (메트릭 수집)        │
-│  SS6-SS8  ETHICS        ──→  LDP ethically-check (윤리 검증)         │
-│  SS9-SS10 TERMINATION   ──→  lux run-tests (중단 조건 확인)          │
-│  SS11-SS12 APPROVAL     ──→  기록 저장 + lux screenshot (승인 증빙)   │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│              INTEGRATION BOUNDARY                   │
+│                                                     │
+│  ┌──────────┐      ┌──────────────┐      ┌──────┐ │
+│  │   Lux    │ ───→ │   Lux        │ ───→ │  LDP │ │
+│  │  System  │      │   Adapter    │      │ Engine│ │
+│  │          │ ←── │   (本 스킬)   │ ←── │      │ │
+│  └──────────┘      └──────────────┘      └──────┘ │
+│       ↑                  ↑                    ↑    │
+│   Lux Internal     Contract Layer         LDP Core │
+│   (접근 불필요)     (우리가 정의)        (접근 불필요)│
+│                                                     │
+│  ⚠️ Adapter는 양쪽 내부를 모른다.                    │
+│     오직 Interface Contract만 안다.                 │
+└─────────────────────────────────────────────────────┘
 ```
 
-### 통합 포인트
+### Step 2: Interface Contract 정의 (IDL — Interface Definition Language)
 
-#### 1. RustGateway Hooks (Axum middleware)
+#### 2.1 Lux → LDP 입력 계약 (Input Contract)
 
-```rust
-// RustGateway~/src/ldp_middleware.rs (신규 파일 제안)
-pub async fn ldp_pre_build_guard(
-    req: Request<Body>,
-    next: Next,
-) -> Result<Response<Body>, AppError> {
-    // 1. 요청 파싱: 어떤 Unity 작업인지 식별
-    // 2. LDP 엔진 호출: domain=Game, level=Quick
-    // 3. Verdict==Pass 인 경우만 next().await
-    // 4. Verdict==Reject 시 403 + homework 반환
+```typescript
+/**
+ * LuxIntegrationTypes.ts
+ * Lux → LDP Adapter용 인터페이스 계약 정의
+ * Lux 내부 구현에 독립적인 추상 타입
+ */
+
+// ============================================================
+// SECTION 1: CORE DATA TYPES (Lux가 제공하는 데이터 형식)
+// ============================================================
+
+/** Lux 유저 식별자 — PII 포함 금지 */
+interface LuxUserId {
+  /** Lux 내부의 익명화/해싱된 유저 ID */
+  anonymousId: string;
+  /** 선택적: 외부 매핑용 비-PII 식별자 (예: device_fingerprint_hash) */
+  externalRef?: string;
+}
+
+/** Lux 세션 메타데이터 */
+interface LuxSessionMeta {
+  sessionId: string;
+  startTime: ISO8601;
+  endTime?: ISO8601;
+  platform: "ios" | "android" | "web" | "pc" | "console" | "other";
+  appVersion: string;
+  sdkVersion: string;
+  locale: string;           // ISO 639-1 (예: "ko", "en")
+  region: string;            // ISO 3166-1 alpha-2
+}
+
+/** Lux 행동 이벤트 (추상화된 공통 형식) */
+interface LuxBehaviorEvent {
+  eventId: string;
+  timestamp: ISO8601;
+  userId: LuxUserId;
+  sessionMeta: LuxSessionMeta;
+
+  /** 이벤트 카테고리 — LDP 카테고리와 매핑 가능해야 함 */
+  category:
+    | "engagement"       // 참여 (플레이, 도전, 성취)
+    | "monetization"     // 과금 (구매, 조회, 결제 시도)
+    | "social"           // 소셜 (친구, 길드, 채팅)
+    | "retention"        // 리텐션 관련 (복귀, 잔류)
+    | "onboarding"       // 온보딩 (튜토리얼, FTE)
+    | "error"            // 오류 (크래시, 버그)
+    | "feedback"         // 피드백 (평점, 리뷰, CS)
+    | "custom";          // 기타 (Lux 고유 이벤트)
+
+  /** 이벤트 이름 */
+  eventName: string;
+
+  /** 이벤트 속성 — 구조화된 키-값 */
+  properties: Record<string, string | number | boolean | null>;
+
+  /** 값 정보 (과금 등 민감 데이터용 별도 필드) */
+  valueInfo?: {
+    /** 금액은 소수점 2자리 문자열 (예: "4900.00") */
+    amount?: string;
+    currency?: string;     // ISO 4217 (예: "KRW", "USD")
+    /** ⚠️ 금액을 0으로 마스킹할 수 있는 플래그 (LDP C-category 준수) */
+    masked?: boolean;
+  };
+}
+
+/** Lux 집계 데이터 (배치/주기적 보고용) */
+interface LuxAggregatedMetrics {
+  reportPeriod: {
+    start: ISO8601;
+    end: ISO8601;
+    granularity: "hourly" | "daily" | "weekly" | "monthly";
+  };
+
+  /** 핵심 게임 KPI — game-analytics-dashboard 스킬과 정렭 */
+  kpis: {
+    dau: number;
+    mau: number;
+    arpu?: string;          // 평균 매출 (문자열로 정밀도 보장)
+    arppu?: string;
+    retention: {
+      d1: number;           // 0.0 ~ 1.0
+      d7: number;
+      d30: number;
+      d60?: number;
+    };
+    churnRate?: number;     // 0.0 ~ 1.0
+  };
+
+  /** Segment별 분할 데이터 */
+  segments?: Array<{
+    segmentName: string;
+    segmentCriteria: string; // 세그먼트 정의 ( human-readable)
+    kpis: LuxAggregatedMetrics["kpis"];
+  }>;
+}
+
+// ============================================================
+// SECTION 2: LDP VERIFICATION REQUEST (LDP 검증 요청)
+// ============================================================
+
+/** LDP 검증 요청 — Adapter가 LDP Engine에 보내는 메시지 */
+interface LdpVerificationRequest {
+  requestId: string;          // UUID v4
+  requestedAt: ISO8601;
+
+  /** 검증 대상 데이터 */
+  source: {
+    type: "event" | "aggregated" | "mixed";
+    events?: LuxBehaviorEvent[];
+    metrics?: LuxAggregatedMetrics;
+  };
+
+  /** 검증 설정 */
+  config: {
+    /** 적용할 LDP Section (다중 선택 가능) */
+    sections: Array<"SS1" | "SS2" | "SS3" | "SS4" | "SS5" | "SS6">;
+
+    /** B-category (윤리) 검증 깊이 */
+    ethicsDepth: "quick" | "standard" | "deep";
+
+    /** C-category (종료/데이터) 검증 포함 여부 */
+    includeTerminationCheck: boolean;
+
+    /** 출력 상세 수준 */
+    verbosity: "summary" | "detailed" | "full";
+
+    /** 커스텀 임계값 (선택적 재정의) */
+    thresholds?: {
+      retentionD1Min?: number;    // 기준: 0.35
+      retentionD7Min?: number;    // 기준: 0.12
+      arpuMaxRatio?: number;      // ARPPU/ARPU 최대 배수
+      churnRateMax?: number;      // 기준: 0.25
+    };
+  };
+
+  /** 요청자 컨텍스트 (audit trail용) */
+  requesterContext: {
+    sourceSystem: "lux-adapter";  // 고정
+    triggeredBy: "scheduled" | "manual" | "event-driven" | "api-call";
+    correlationId?: string;       // Lux 측 요청 ID (추적용)
+  };
 }
 ```
 
-#### 2. MCP Tool Wrappers
+#### 2.2 LDP → Lux 출력 계약 (Output Contract)
 
 ```typescript
-// McpHelper~/src/ldp-tools.ts (제안)
-const ldpTools = {
-  ldp_verify_operation: {
-    description: "Run LDP ethics check before Lux operation",
-    parameters: {
-      operation: "compile|test|build|screenshot|dynamic-code",
-      context: "string — current Unity project state summary"
-    }
-  },
-  ldp_record_decision: {
-    description: "Record post-operation result into LDP audit trail",
-    parameters: {
-      operation_id: "string",
-      result: "success|failure|partial",
-      artifacts: "string[] — generated file paths"
-    }
-  }
+// ============================================================
+// SECTION 3: LDP VERIFICATION RESPONSE (LDP 검증 응답)
+// ============================================================
+
+/** LDP 검증 결과 — LDP Engine이 Adapter에게 반환 */
+interface LdpVerificationResponse {
+  requestId: string;
+  respondedAt: ISO8601;
+  processingTimeMs: number;
+
+  /** 종합 판정 */
+  verdict: "PASS" | "REVIEW" | "REJECT" | "ERROR" | "DEFERRED";
+
+  /** 신뢰도 점수 (0.0 ~ 1.0) — 데이터 부족/불확실성 반영 */
+  confidence: number;
+
+  /** Section별 상세 결과 */
+  sectionResults: Array<{
+    section: string;              // "SS1" | "SS2" | ...
+    status: "pass" | "review" | "reject" | "skipped" | "error";
+    score?: number;               // 0 ~ 100
+    findings: LdpFinding[];
+  }>;
+
+  /** B-category (윤리) 전용 결과 */
+  ethicsResult?: {
+    overallStatus: "clear" | "warning" | "violation" | "inconclusive";
+    flags: Array<{
+      code: string;               // 예: "B-001", "B-007"
+      severity: "info" | "low" | "medium" | "high" | "critical";
+      category:
+        | "manipulative_design"   // 조작적 설계
+        | "exploitative_monetization" // 착취적 수익화
+        | "coercive_communication"    // 강압적 커뮤니케이션
+        | "psychological_harm"        // 심리적 해악
+        | "unfair_advantage"          // 불공정 우위
+        | "other";
+      description: string;        // human-readable 설명 (한글+영어)
+      evidence: string;           // 어떤 데이터/지표에서 발견되었는가
+      suggestion: string;         // 권장 개선안
+      ldpReference: string;       // LDP 원문 섹션 참조 (예: "LDP §7-B3")
+    }>;
+  };
+
+  /** C-category (종료/데이터) 전용 결과 */
+  terminationResult?: {
+    overallStatus: "ready" | "partial" | "not_ready" | "na";
+    checks: Array<{
+      name: string;               // 예: "data_export", "account_deletion"
+      status: "passed" | "failed" | "pending" | "not_applicable";
+      details?: string;
+    }>;
+  };
+
+  /** 실행 가능한 권장사항 (Lux 측에서 바로 사용 가능한 형식) */
+  actionItems: Array<{
+    priority: "P0" | "P1" | "P2" | "P3";
+    category: "immediate_action" | "design_change" | "policy_update" | "monitoring" | "investigation";
+    title: string;
+    description: string;
+    /** Lux 측에서 처리했음을 보고할 수 있는 tracking ID */
+    trackingId: string;
+    dueDate?: ISO8601;
+  }>;
+}
+
+/** LDP Finding — 개별 검증 발견 사항 */
+interface LdpFinding {
+  id: string;
+  type: "strength" | "weakness" | "risk" | "opportunity" | "neutral";
+  title: string;
+  detail: string;
+  evidence?: string;             // 관련 데이터 조각
+  severity?: "info" | "low" | "medium" | "high" | "critical";
+}
+```
+
+### Step 3: Adapter 아키텍처 설계 (Adapter Architecture)
+
+#### 3.1 Adapter 구성 요소
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                  LUX ADAPTER ARCHITECTURE                │
+│                                                          │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │              INGESTION LAYER                     │   │
+│  │  ┌─────────────┐  ┌─────────────┐               │   │
+│  │  │ Event       │  │ Batch/      │               │   │
+│  │  │ Ingestor    │  │ Poller      │               │   │
+│  │  │ (real-time) │  │ (scheduled) │               │   │
+│  │  └──────┬──────┘  └──────┬──────┘               │   │
+│  │         └────────┬────────┘                      │   │
+│  │                  ▼                               │   │
+│  │  ┌──────────────────────────────┐                │   │
+│  │  │ NORMALIZER                   │                │   │
+│  │  │ Lux raw format →             │                │   │
+│  │  │ LuxBehaviorEvent (Contract)  │                │   │
+│  │  └──────────────┬───────────────┘                │   │
+│  ├──────────────────┼───────────────────────────────┤   │
+│  │          VALIDATION LAYER                        │   │
+│  │  ┌──────────────────────────────┐                │   │
+│  │  │ Schema Validator            │                │   │
+│  │  │ • Required fields check     │                │   │
+│  │  │ • Type/range validation     │                │   │
+│  │  │ • PII detection & mask      │                │   │
+│  │  │ • Data freshness check      │                │   │
+│  │  └──────────────┬───────────────┘                │   │
+│  ├──────────────────┼───────────────────────────────┤   │
+│  │          DISPATCH LAYER                          │   │
+│  │  ┌──────────────────────────────┐                │   │
+│  │  │ LDP Client                   │                │   │
+│  │  │ • Build VerificationRequest  │                │   │
+│  │  │ • Call LDP Engine (HTTP/RPC) │                │   │
+│  │  │ • Retry / Timeout / Circuit  │                │   │
+│  │  │   Breaker                    │                │   │
+│  │  └──────────────┬───────────────┘                │   │
+│  ├──────────────────┼───────────────────────────────┤   │
+│  │          RESPONSE LAYER                         │   │
+│  │  ┌──────────┐  ┌──────────────┐  ┌───────────┐  │   │
+│  │  │ Response │  │ Alert        │  │ Feedback  │  │   │
+│  │  │ Formatter│  │ Generator    │  │ Loop      │  │   │
+│  │  │ (Lux fmt)│  │ (threshold)  │  │ (→ Lux)   │  │   │
+│  │  └──────────┘  └──────────────┘  └───────────┘  │   │
+│  ├──────────────────────────────────────────────────┤   │
+│  │          OBSERVABILITY LAYER                     │   │
+│  │  • Metrics (request latency, error rate)         │   │
+│  │  • Logs (structured JSON)                        │   │
+│  │  • Traces (request correlation)                  │   │
+│  └──────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────┘
+```
+
+#### 3.2 핵심 인터페이스 (Adapter Public API)
+
+```typescript
+// ============================================================
+// SECTION 4: ADAPTER PUBLIC INTERFACE (구현체가 지켜야 할 계약)
+// ============================================================
+
+/** LuxLdpAdapter — Lux와 LDP 간의 공식 어댑터 인터페이스 */
+interface ILuxLdpAdapter {
+  // ---------- Ingestion ----------
+
+  /** 실시간 이벤트 수신 (Lux → Adapter) */
+  ingestEvent(rawEvent: unknown): Promise<IngestionResult>;
+
+  /** 배치/집계 데이터 수신 (Lux → Adapter) */
+  ingestAggregatedMetrics(
+    rawMetrics: unknown
+  ): Promise<IngestionResult>;
+
+  // ---------- Verification ----------
+
+  /** LDP 검증 요청 (동기/비동기) */
+  requestVerification(
+    params: VerificationParams
+  ): Promise<LdpVerificationResponse>;
+
+  /** 검증 상태 조회 (비동기 요청용) */
+  getVerificationStatus(
+    requestId: string
+  ): Promise<VerificationStatus>;
+
+  // ---------- Feedback Loop ----------
+
+  /** LDP 검증 결과를 Lux 측으로 전달 (Adapter → Lux) */
+  pushResultToLux(
+    response: LdpVerificationResponse,
+    targetEndpoint: string
+  ): Promise<PushResult>;
+
+  // ---------- Health & Admin ----------
+
+  /** Adapter 건강 체크 */
+  healthCheck(): Promise<AdapterHealth>;
+
+  /** Lux ↔ LDP 연결 상태 확인 */
+  connectivityCheck(): Promise<ConnectivityStatus>;
+}
+
+/** 지원 타입들 */
+type IngestionResult =
+  | { success: true; eventId: string; normalized: LuxBehaviorEvent }
+  | { success: false; error: IngestionError; retryable: boolean };
+
+type VerificationParams = {
+  eventType?: "realtime" | "batch" | "custom";
+  timeRange?: { start: ISO8601; end: ISO8601 };
+  segmentFilter?: string[];
+  config: LdpVerificationRequest["config"];
+};
+
+type VerificationStatus =
+  | { state: "pending"; queuedAt: ISO8601 }
+  | { state: "processing"; startedAt: ISO8601; estimatedCompletion?: ISO8601 }
+  | { state: "completed"; response: LdpVerificationResponse }
+  | { state: "failed"; error: string; retriable: boolean };
+
+type PushResult =
+  | { success: true; deliveredAt: ISO8601; luxReceiptId?: string }
+  | { success: false; error: string; retryable: boolean };
+
+type AdapterHealth = {
+  status: "healthy" | "degraded" | "unhealthy";
+  components: {
+    ingestion: "up" | "down" | "degraded";
+    ldpConnection: "up" | "down" | "degraded";
+    luxOutbound: "up" | "down" | "degraded";
+  };
+  metrics: {
+    eventsProcessedLastHour: number;
+    avgProcessingTimeMs: number;
+    errorRate: number;           // 0.0 ~ 1.0
+    queueDepth: number;
+  };
+};
+
+type ConnectivityStatus = {
+  ldpEngine: { reachable: boolean; latencyMs: number };
+  luxSystem: { reachable: boolean; latencyMs: number };
+  lastSuccessfulPing: ISO8601;
 };
 ```
 
-#### 3. CLI Commands
+### Step 4: 에러 핸들링 및 회복 전략 (Error Handling)
 
-```bash
-# Pre-build ethics check
-lux ldp check --operation compile --level quick
+#### 4.1 에러 분류 및 대응
 
-# Full review with socratic mode
-lux ldp review --operation ai-generate-code --mode mixed --domain game
+| 에러 유형 | 원인 | 대응 | Retry? |
+|----------|------|------|--------|
+| **Schema Validation Error** | Lux 데이터가 Contract과 불일치 | 거부 + 로깅 + 알람 | No (발신측 수정 필요) |
+| **PII Detection Error** | PII 포함 감지 | 마스킹 후 재처리 or 거부 | Case-by-case |
+| **LDP Engine Unreachable** | LDP 서버 다운/네트워크 | Queue에 저장 + Retry | Yes (Exponential Backoff) |
+| **LDP Processing Error** | LDP 내부 오류 | 결과에 ERROR 표기 + 알람 | No (LDP 팀 에스컬레이션) |
+| **Timeout** | 처리 시간 초과 | DEFERRED 반환 + 백그라운드 재시도 | Yes |
+| **Lux Outbound Failure** | Lux 수신 실패 | Queue + Retry + Dead Letter Queue | Yes (유한 횟수) |
+| **Rate Limit** | LDP/Lux 호출량 제한 | 429 처리 + Backoff | Yes |
 
-# View decision history
-lux ldp history --json
-
-# Record manual approval
-lux ldp approve <decision-id> --note "Reviewed by lead dev"
-```
-
----
-
-## [English] LDP Decision Protocol — Ethical Guardrails for Lux
-
-### What is LDP?
-
-The **Lina Decision Protocol (LDP)** is a structured ethical verification framework for AI-driven decisions. Its 5-step protocol ensures every automated decision is transparent, accountable, and reproducible.
-
-When Lux automates the Unity Editor via AI agents, LDP provides:
-
-- **Pre-build guardrails**: Ethical fitness verification before compile/build/test runs
-- **Post-operation verification**: Safety and quality audit after automation tasks
-- **Decision audit trail**: Records and lineage for all AI decisions
-
-### Why Lux Needs LDP
-
-| Problem | LDP Solution |
-|---------|-------------|
-| AI-generated C# code can break projects | Step3 Ethics: Code change impact validation |
-| Automated builds cause unexpected asset changes | Step4 Termination: Rollback plans & stop conditions |
-| PlayMode tests risk player data leakage | Step2 Numbers: Data flow quantification |
-| Unclear accountability for AI decisions | Step5 Approval: Stakeholder sign-off records |
-| Cumulative drift in repetitive automation | Step1 Acknowledge: Goal-result drift measurement |
-
-### Integration Points
-
-| Layer | Component | Role |
-|-------|-----------|------|
-| **RustGateway** | Axum middleware hook | Intercepts build/test commands, runs LDP pre-check |
-| **MCP Helper** | Node.js tool wrappers | Exposes `ldp_verify` / `ldp_record` to AI agents |
-| **CLI** | `lux ldp *` subcommands | Human-facing check/approve/history workflow |
-| **C# Editor** | `LuxLdpGate.cs` | In-editor decision prompt before destructive operations |
-| **Storage** | SQLite via ldp-storage | Persistent decision records with lineage |
-
----
-
-## [日本語] LDP 決定プロトコル — Lux Unity自動化の倫理検証
-
-### LDPとは？
-
-**Lina Decision Protocol (LDP)**は、AI主導の意思決定のための構造化された**倫理検証フレームワーク**です。5ステッププロトコルを通じて、すべての自動化された意思決定が透明で、責任があり、再現可能であることを保証します。
-
-### LuxがLDPを必要とする理由
-
-| 問題 | LDPの解決策 |
-|------|-----------|
-| AIが生成したC#コードがプロジェクトを破壊する可能性 | Step3 Ethics: コード変更影響範囲の検証 |
-| 自動化ビルドが予期せぬアセット変更を引き起こす | Step4 Termination: ロールバック計画と停止条件 |
-| PlayModeテストでプレイヤーデータ漏洩のリスク | Step2 Numbers: データフローの定量化 |
-| AI決定に対する責任所在が不明確 | Step5 Approval: ステークホルダー署名記録 |
-
----
-
-## 언제 사용할까 (When to Use)
-
-- ✅ **AI가 C# 코드를 생성/수정하기 전** — Step3 Ethics 검증
-- ✅ **자동화 빌드 또는 PlayMode 테스트 실행 전** — Step2+Step4 검증
-- ✅ **동적 코드 실행 (`lux dynamic-code`) 전** — 전체 5단계 Quick 모드
-- ✅ **스크린샷/녹화 후 분석 리포트 생성 시** — Step5 Approval 기록
-- ✅ **AI Bridge를 통한 원격 조작 전** — Full 모드 Socratic 검증
-- ❌ **단순 읽기 전용 조회** (`lux unity context`, `lux get-logs`) — 불필요
-- ❌ **수동으로 검토한 안전한 작업** — Skip 가능
-
-## 사전 요건 (Prerequisites)
-
-1. **LDP 엔진**: `lina-decision-protocol` 크레이트 빌드 완료 (`cargo build -p ldp-core`)
-2. **Lux Core**: `lux-unity` 스킬 v1.0.0 이상 설치됨
-3. **Unity 프로젝트**: `lux unity context`로 접근 가능한 상태
-4. **SQLite**: ldp-storage 의존성 (decision record 지속성)
-
-## 절차 (Procedure)
-
-### 1. Pre-Build Check (빌드/컴파일 전)
-
-```bash
-# 1단계: 현재 Unity 컨텍스트 수집
-lux unity context --json > .lux/ctx.json
-
-# 2단계: LDP 윤리 검증 실행
-lux ldp check \
-  --operation compile \
-  --input .lux/ctx.json \
-  --level quick \
-  --domain game \
-  --json > .lux/ldp-verdict.json
-
-# 3단계: Verdict 확인
-# PASS → 진행
-# REVIEW → homework 항목 수정 후 재검증
-# REJECT → 작업 중단, 로그 확인
-```
-
-### 2. Post-Operation Verification (작업 완료 후)
-
-```bash
-# 1단계: 작업 결과 수집
-lux run-tests --test-platform EditMode --json > .lux/test-results.json
-lux screenshot --path .lux/post-op.png
-
-# 2단계: LDP 레코드에 결과 기록
-lux ldp record \
-  --decision-id $(cat .lux/ldp-verdict.json | jq -r '.record_id') \
-  --result success \
-  --artifacts .lux/test-results.json,.lux/post-op.png \
-  --json
-```
-
-### 3. AI Agent 통합 (MCP 경유)
+#### 4.2 Circuit Breaker 패턴
 
 ```
-Agent: "lux compile 실행해줘"
-  → MCP: ldp_verify_operation(operation="compile", context=...)
-  → LDP Engine: { verdict: "PASS", score: 92, record_id: "ldr_..." }
-  → MCP: lux compile (실행)
-  → MCP: ldp_record_decision(operation_id="ldr_...", result="success")
-  → Agent: "컴파일 성공. LDP score: 92/100 (PASS)"
+Circuit Breaker States:
+
+  CLOSED ──[연속 N회 실패]──→ OPEN
+    │                              │
+    │ [정상 요청]                   │ [모든 요청 즉시 fail-fast]
+    ▼                              │
+  성공 처리                         │
+    │                              │
+    └──────[Half-Open 타이머 만료]──┘
+              │
+              ▼
+          HALF-OPEN ──[M회 성공]──→ CLOSED
+              │
+              └──[1회 실패]──→ OPEN (타이머 리셋)
+
+권장 설정:
+  • failureThreshold: 5
+  • halfOpenMaxCalls: 3
+  • openDuration: 30s (initial), 60s, 120s (exponential)
 ```
 
-## 주의사항 (Pitfalls)
+### Step 5: LDP 검증 파이프라인 연동 (Pipeline Integration)
 
-| Pitfall | 해결책 |
-|---------|--------|
-| **LDP 검증이 빌드 시간을 지연시킴** | Quick 모드 사용 (질문 8개만, ~2초) |
-| **REJECT verdict에 대한 fallback 부재** | REJECT 시 자동 rollback 훅 연결 |
-| **Domain mismatch** (Generic vs Game) | Lux 작업에는 항상 `--domain game` 사용 |
-| **SQLite lock contention** | 병렬 작업 시 WAL 모드 활성화 |
-| **Circular dependency** (LDP→Lux→LDP) | Pre-build 체크만 LDP 통과, post는 비동기 기록 |
-| **한국어 질문-영어 agent 간 번역 비용** | LDP 엔진 내부적으로 locale 지원 확장 필요 |
-| **Decision record storage bloat** | 주간 압축 + 90일 보 retention policy |
+#### 5.1 검증 워크플로우
 
-## 검증 (Verification)
-
-```bash
-# 1. 스킬 디렉토리 구조 확인
-ls Skills/ldp-decision-protocol/
-# Expected: manifest.json, SKILL.md, references/
-
-# 2. manifest.json 유효성
-python3 -c "
-import json
-m = json.load(open('Skills/ldp-decision-protocol/manifest.json'))
-assert m['name'] == 'ldp-decision-protocol'
-assert m['type'] == 'integration'
-assert 'lux-unity' in m.get('dependencies', {})
-print('✓ manifest valid')
-"
-
-# 3. LDP 엔진 연결 테스트
-cd RustGateway~ && cargo run -- ldp check --help
-# Assert: help output shows --operation, --level, --domain flags
-
-# 4. End-to-end smoke test
-lux ldp check --operation compile --level quick --domain game
-# Assert: JSON output with verdict field (PASS/REVIEW/REJECT)
-
-# 5. 참고 문서 존재 확인
-ls Skills/ldp-decision-protocol/references/
-# Expected: ldp-protocol-overview.md, lux-ldp-mapping-table.md,
-#           ethical-checklist-for-unity-automation.md
+```
+┌─────────────────────────────────────────────────────────┐
+│              VERIFICATION PIPELINE                       │
+│                                                          │
+│  1. TRIGGER                                              │
+│     ├── Scheduled (매일 09:00 KST)                       │
+│     ├── Event-driven (Lux 이벤트 임계값 도달)             │
+│     ├── Manual (PM/Operator 요청)                        │
+│     └── API Call (외부 시스템 트리거)                     │
+│          │                                               │
+│          ▼                                               │
+│  2. COLLECT                                              │
+│     ├── Lux Event Store에서 데이터 수집                   │
+│     ├── Aggregation (필요 시)                            │
+│     └── PII Masking                                     │
+│          │                                               │
+│          ▼                                               │
+│  3. BUILD REQUEST                                        │
+│     ├── LdpVerificationRequest 조립                      │
+│     ├── Config 적용 (Section, Depth, Thresholds)         │
+│     └── Request ID 생성 (UUID)                           │
+│          │                                               │
+│          ▼                                               │
+│  4. EXECUTE (LDP Engine)                                 │
+│     ├── SS1-SS3: Acknowledge & Analyze                   │
+│     ├── SS4-SS5: Numbers & Budget                        │
+│     ├── SS6: Synthesize Verdict                         │
+│     ├── B-category: Ethics Check                         │
+│     └── C-category: Termination Check                    │
+│          │                                               │
+│          ▼                                               │
+│  5. PROCESS RESPONSE                                    │
+│     ├── Verdict 해석                                     │
+│     ├── Action Items 생성                                │
+│     ├── Alert 발생 (Critical flag 시)                    │
+│     └── Lux 측으로 Result Push                          │
+│          │                                               │
+│          ▼                                               │
+│  6. FEEDBACK LOOP                                       │
+│     ├── Lux에서 Action Item 처리 완료 보고               │
+│     ├── 재검증 스케줄링 (필요 시)                        │
+│     └── Audit Log 기록                                   │
+│                                                          │
+└─────────────────────────────────────────────────────────┘
 ```
 
-## 참고 문서 (References)
+#### 5.2 Auto-trigger 규칙 예시
 
-- [LDP 5-Step Protocol Overview](./references/ldp-protocol-overview.md) — LDP 프로토콜 요약
-- [Lux ↔ LDP Mapping Table](./references/lux-ldp-mapping-table.md) — Lux 작업과 LDP 카테고리 매핑
-- [Unity Automation Ethics Checklist](./references/ethical-checklist-for-unity-automation.md) — Unity 자동화 윤리 체크리스트
+```yaml
+# lux-adapter-triggers.yaml
+triggers:
+  - name: daily_health_check
+    schedule: "0 9 * * *"          # 매일 09:00 KST
+    config:
+      sections: [SS1, SS2, SS3, SS4, SS5, SS6]
+      ethicsDepth: standard
+      includeTerminationCheck: true
+      verbosity: detailed
+
+  - name: churn_spike_alert
+    condition:
+      metric: churnRate
+      operator: ">"
+      threshold: 0.25
+      window: 7d
+    config:
+      sections: [SS3, SS6]
+      ethicsDepth: deep
+      includeTerminationCheck: false
+      verbosity: full
+
+  - name: post_release_check
+    trigger: event_driven
+    eventType: "lux.version.deployed"
+    cooldown: 24h                  # 배포 후 24시간 내 1회만
+    config:
+      sections: [SS1, SS2, SS3]
+      ethicsDepth: quick
+      includeTerminationCheck: false
+      verbosity: summary
+
+  - name: ethics_flag_auto_review
+    condition:
+      flag: B-category
+      severity: ">= high"
+    config:
+      sections: [SS3, SS6]
+      ethicsDepth: deep
+      includeTerminationCheck: true
+      verbosity: full
+    escalation:
+      notify: ["pm", "ethics-reviewer"]
+      sla: "4h"                    # 4시간 내 인간 검토 필요
+```
+
+### Step 6: 테스트 및 검증 전략 (Testing Strategy)
+
+#### 6.1 테스트 계층
+
+| 테스트 유형 | 목적 | 방법 | 빈도 |
+|-----------|------|------|------|
+| **Contract Test** | Interface Contract 준수 검증 | Schema validation, Type checking | PR마다 |
+| **Integration Test** | Mock Lux/Mock LDP로 E2E 흐름 검증 | ContractKit, Pact | PR마다 |
+| **Resilience Test** | 장애 시나리오 검증 | Chaos engineering (Latency, Error injection) | 분기마다 |
+| **Performance Test** | 처리량/지연시간 검증 | Load test (목표 QPS × 3) | 릴리즈 전 |
+| **PII Safety Test** | PII 유출 방지 검증 | PII 샘플 데이터 주입 + 마스킹 확인 | PR마다 |
+
+#### 6.2 Contract Test 예시 (Pact-style)
+
+```typescript
+// Contract Test: Lux → Adapter 수신 계약
+describe("Lux → Adapter: Ingestion Contract", () => {
+  it("should accept valid LuxBehaviorEvent and normalize it", async () => {
+    const validEvent = { /* contract-compliant event */ };
+    const result = await adapter.ingestEvent(validEvent);
+    expect(result.success).toBe(true);
+    expect(result.normalized).toMatchSchema(LuxBehaviorEventSchema);
+  });
+
+  it("should reject event with PII in userId", async () => {
+    const piiEvent = { userId: { anonymousId: "email@example.com" } };
+    const result = await adapter.ingestEvent(piiEvent);
+    expect(result.success).toBe(false);
+    expect(result.error.code).toBe("PII_DETECTED");
+  });
+
+  it("should handle malformed event gracefully", async () => {
+    const garbage = { not: "a valid event" };
+    const result = await adapter.ingestEvent(garbage);
+    expect(result.success).toBe(false);
+    expect(result.retryable).toBe(false); // 발신측 수정 필요
+  });
+});
+```
+
+### Step 7: 보안 및 감사 (Security & Audit)
+
+#### 7.1 보안 요구사항
+
+| 영역 | 요구사항 | 구현 가이드 |
+|------|---------|-----------|
+| **전송 암호화** | Lux ↔ Adapter ↔ LDP 간 TLS 1.3+ | mTLS 권장 |
+| **인증** | Mutual authentication | API Key + Certificate |
+| **인가** | Role-based access | read-only / verify / admin 역할 분리 |
+| **로그 보안** | PII 미포함, tamper-proof | Structured log + SIEM 전송 |
+| **Audit Trail** | 모든 검증 요청/응답 기록 | Write-once log (append-only) |
+
+#### 7.2 Audit Log 스키마
+
+```typescript
+interface LuxAdapterAuditLog {
+  logId: string;              // UUID
+  timestamp: ISO8601;
+  actor: "system" | "user:{userId}";
+  action: "ingest" | "verify" | "push_result" | "config_change";
+  requestId?: string;
+  inputHash: string;          // SHA-256 of input (무결성)
+  outputSummary: string;      // verdict only (전체 데이터 미포함);
+  ipAddress?: string;         // masking: /24 prefix only
+  userAgent?: string;
+  durationMs: number;
+}
+```
+
+## Pitfalls
+
+1. **Concrete-to-Concrete coupling (구현체 결합)** — Lux 내부 타입을 그대로 Adapter 내부에 가져오면 Lux 버전업마다 Adapter가 깨집니다. **반드시 Contract 타입(Step 2)을 중간에 두세요.**
+2. **Silent data loss (조용한 데이터 손실)** — Normalizer에서 필드를 무시하거나 마스킹하면서 로그를 남기지 않으면 데이터가 사라진 줄도 모릅니다. **모든 drop/mask에 반드시 log를 남기세요.**
+3. **LDP를 black box로 취급** — LDP Engine의 응답만 받고 내부 로직을 이해하지 않으면 잘못된 검증 결과를 그대로 Lux에 전달합니다. **최소한 LDP Section별로 어떤 검증을 하는지 이해하세요.**
+4. **Retry storm (재시도 폭주)** — LDP 장애 시 큐가 차면서 무한 재시도하면 양쪽 시스템 모두 악화됩니다. **Circuit Breaker(Step 4.2)는 선택이 아닙니다.**
+5. **Verdict의 맹신** — LDP가 "PASS"라고 해도 Lux의 비즈니스 문맥에서 PASS가 아닐 수 있습니다. **Verdict는 참고 자료이지 최종 결정이 아닙니다.** 항상 human-in-the-loop를 유지하세요.
+6. **PII boundary blur (PII 경계 흐림)** — "익명화했다"고 생각하지만 여러 이벤트를 조합하면 re-identification 가능한 경우가 많습니다. **Data Minimization 원칙(Step 3.1)을 엄격히 적용하고 정기적으로 Re-identification risk audit를 하세요.**
+
+## Verification Checklist
+
+- [ ] **Integration Scope** 정의 완료 — 통합 방향(단방향/양방향) + 목적 명확
+- [ ] **Input Contract (IDL)** 작성 완료 — LuxUserId, LuxBehaviorEvent, LuxAggregatedMetrics, LdpVerificationRequest
+- [ ] **Output Contract (IDL)** 작성 완료 — LdpVerificationResponse, EthicsResult, TerminationResult, ActionItem
+- [ ] **Adapter Public Interface** 정의 완료 — ILuxLdpAdapter의 6개 메서드 + 모든 지원 타입
+- [ ] **Adapter Architecture** — 5-layer 구조(Ingestion/Validation/Dispatch/Response/Observability) 설계 완료
+- [ ] **Error Handling Matrix** — 7가지 에러 유형별 대응 + Retry 정책
+- [ ] **Circuit Breaker** 구현 — CLOSED/HALF-OPEN/OPEN 상태 머신 + 권장 파라미터
+- [ ] **Verification Pipeline** — 6단계 워크플로우 + Auto-trigger 규칙 4종 이상
+- [ ] **Test Strategy** — 5가지 테스트 계층 + Contract Test 예시
+- [ ] **Security & Audit** — 5가지 보안 요구사항 + Audit Log 스키마
+- [ ] **Version Compatibility Plan** — Lux API 버전 변경 시 Adapter 대응 절차
