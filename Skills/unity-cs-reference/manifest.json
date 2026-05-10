@@ -1,0 +1,19 @@
+{
+  "name": "unity-cs-reference",
+  "version": "1.0.0",
+  "description": "Unity C# reference source lookup for Editor automation and extension development. Uses unitycsreference repo as read-only reference.",
+  "displayName": "Unity C# Reference",
+  "type": "core",
+  "keywords": [
+    "unity",
+    "editor",
+    "uidelements",
+    "assetdatabase",
+    "buildpipeline",
+    "reference",
+    "internal-api"
+  ],
+  "author": {
+    "name": "Linalab"
+  }
+}
