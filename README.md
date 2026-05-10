@@ -1,352 +1,275 @@
 # LUX
 
-**LUX** stands for **Linalab Unity X**.
+**LUX** = **L**inalab **U**nity **X** — 로컬 퍼스트 유니티 에디터 AI 자동화 툴킷.
 
-LUX is a unified Unity Editor AI adapter and automation toolkit. It bridges AI
-coding tools (Claude Code, OpenAI Codex, OpenCode), external terminals, Git
-workflows, Codex Image generation, WebRTC remote access, and a web-based
-control surface into one Editor-focused package.
+LUX는 AI 코딩 도구(Claude Code, OpenAI Codex, OpenCode)와 Unity Editor를 연결하는
+**로컬 전용** 패키지입니다. 원격 스트리밍 없이, 에디터 내에서 직접 동작합니다.
 
-The `lux` CLI is part of that workflow, but LUX is not just a Unity CLI
-wrapper: it is the Unity-side integration layer for AI-assisted development,
-local automation, validation, and project operations.
+> **"Local-first"** — 모든 기능은 `localhost`에서 작동합니다. WebRTC/원격 접속은 지원하지 않습니다.
 
-## Features
+## 핵심 기능
 
-### AI Tool Integration
+### 🤖 AI 코딩 도구 연동
+- **멀티 AI 터미널** — Claude Code, OpenAI Codex, OpenCode를 웹 대시보드에서 전환하며 사용
+- **스킬 디스패치** — compile, test, screenshot, logs, playmode 등을 어떤 AI 도구에서든 일관되게 호출
+- **도구 실행 API** — `/api/tools/execute` + WebSocket 이벤트 브로드캐스팅
+- **AI 이벤트 로깅** — 구조화된 JSONL 이벤트 로그 (22+ redaction 패턴)
 
-- **Multi-AI Terminal** — Switch between Claude Code, OpenAI Codex, and
-  OpenCode in a web-based xterm terminal with per-tool session persistence
-  and command history.
-- **Skill Dispatch** — Invoke compile, test, screenshot, logs, playmode, and
-  dynamic-code from any active AI tool through a unified skill panel.
-- **Tool Execution API** — Server-side `/api/tools/execute` with WebSocket
-  event broadcasting to connected clients.
-- **AI Tool Dispatcher** — Unity-side C# bridge (`LuxAIToolDispatcher`) that
-  routes tool commands to the gateway server.
+### 🎨 CodexImage 파이프라인
+- **노드 기반 이미지 생성** — 6가지 노드 타입 (UnityContext, PromptTemplate, CodexGeneration, Segmentation, MaskPostProcessing, OutputDirectory)
+- **다중 익스포터** — Unity 2D Animation, Spine draft rig, sprite sheet
+- **비주얼 에디터** — ReactFlow 노드 그래프 에디터 (Phase D 개발 중)
 
-### Visual Pipeline Editor
+### 🔧 Unity Editor 통합
+- **Lux Workbench** — LUX 메인 컨트롤 윈도우
+- **AI Bridge TCP 서버** — 외부 터미널/클라이언트 프로토콜 핸들러
+- **Unity Git** — status, staging, history, branches, submodules
+- **자동화 가드레일** — 명령어 블랙리스트, 감사 로그, 승인 상태
+- **서버 상태 인디케이터** — 게이트웨이 서버 상태 + heartbeat keep-alive
 
-- **ReactFlow Node Editor** — Drag-and-drop graph with typed port connections.
-- **6 Node Types** — UnityContext, OutputDirectory, PromptTemplate,
-  CodexGeneration, Segmentation, MaskPostProcessing.
-- **Undo/Redo** — 40-step history stack with copy/paste support.
-- **Save/Load/Execute** — Pipeline workflows as JSON through `/api/graphs`,
-  executable from the web UI.
+### 🖥️ Rust 게이트웨이 & CLI
+- **웹 서버** — Axum HTTP/WebSocket 게이트웨이 (React SPA + REST API)
+- **CLI 명령어** — serve, unity, skill, ai-log, compile, session, mcp, config, screenshot
+- **스킬 시스템** — 번들 코어 스킬 + 설치 가능한 외부 스킬 (`lux skill install/remove/update`)
+- **서버 라이프사이클** — idle timeout + graceful shutdown; Unity heartbeat로 유지
 
-### Remote Access & Streaming
+### 📊 로컬 웹 대시보드 (Phase C)
+- **Compile Panel** — 배치 컴파일 실행 및 결과 확인
+- **Test Panel** — EditMode/PlayMode 테스트 실행 및 결과 보기
+- **Log Panel** — AI 이벤트 로그 조회 (필터링 지원)
+- **Skill Panel** — 설치된 스킬 관리
+- **Project Panel** — Unity 프로젝트 상태 및 컨텍스트
+- **Dashboard Overview** — 통합 상태 카드 그리드
 
-- **WebRTC Streaming** — Unity camera capture with configurable resolution and
-  frame rate via `com.unity.webrtc` (reflection-based backend detection).
-- **Remote Control** — Mouse, keyboard, and touch input forwarding from
-  browser to Unity Editor.
-- **Signaling Relay** — Queue-based WebSocket message delivery for session
-  negotiation.
-- **Token Authentication** — All remote and signaling endpoints require
-  `x-lux-token` header.
-- **STUN/TURN Support** — Configurable ICE servers for local and remote
-  networks.
+## 로드맵
 
-### Unity Editor Integration
-
-- **Lux Workbench** — Main control window for the LUX system.
-- **AI Bridge TCP Server** — Protocol handler for external terminal/client
-  connections with dynamic code execution, input recording/replay.
-- **Unity Git** — Status, staging, history, branches, remotes, and submodules
-  in Editor windows.
-- **Codex Image** — Node-based image generation pipeline with multiple
-  exporters (Unity 2D Animation, Spine draft rig, sprite sheets).
-- **Automation Guardrails** — Command blacklist, audit log, and approval state.
-- **Server Status Indicator** — Shows gateway server status in Editor with
-  heartbeat keep-alive and uptime display.
-
-### Rust Gateway & CLI
-
-- **Web Server** — Axum-based HTTP/WebSocket gateway serving React SPA and
-  REST API.
-- **CLI Commands** — Compile, test, Unity control (screenshot, logs, hierarchy,
-  dynamic-code, input simulation), and skill management.
-- **Skill System** — Core bundled skills + installable external skills via
-  `lux skill install/remove/update`.
-- **Server Lifecycle** — Configurable idle timeout with graceful shutdown;
-  Unity Editor sends periodic heartbeats to keep the server alive.
-
-## Roadmap
-
-### Phase 1 — Core Editor Adapter ✅
-
-Local-first Unity Editor integration layer for AI-assisted development.
-
-- macOS-first Unity Editor adapter with Lux Workbench (`LuxEditor/`).
-- AI Bridge TCP server and protocol handler for external terminal/client
-  connections (`AiBridgeEditor/`).
-- Unity Git integration with status, staging, and history windows
-  (`UnityGitEditor/`).
-- Codex Image generation pipeline with node-based execution engine and
-  multiple exporters (`CodexImage/`).
-- Rust `lux` CLI: compile, test, unity status, and skill commands
-  (`RustGateway~/`).
-- Automation guardrails: command blacklist, audit log, and approval state.
-- Skill Manager foundation: `lux skill list/info` CLI, core `lux-unity` skill
-  (`Skills/`).
-- MCP helper for AI tool integration (`McpHelper~/`).
-
-### Phase 2 — Gateway Expansion & Web UI ✅
-
-Extend the Rust gateway into a full web-accessible control surface.
-
-- Rust gateway serves static SPA files from `/ui/*` route.
-- Session management API (`/api/sessions`) and pipeline API
-  (`/api/pipeline`).
-- React + TypeScript SPA with ReactFlow node editor and AI tool terminal.
-- Multi-scope skill discovery: core, project (`.lux/skills/`), global
-  (`~/.lux/skills/`).
-
-### Phase 3 — Visual Pipeline Editor ✅
-
-Interactive graph-based editing for CodexImage pipelines.
-
-- Drag-and-drop node graph with typed port connections via ReactFlow.
-- Save/load pipeline workflows as JSON through `/api/graphs`.
-- Node library browser with category grouping and search.
-- Undo/redo (40-step stack) and copy/paste in the visual editor.
-- Bridge between ReactFlow web UI and existing C# pipeline engine
-  via `/api/graphs/:id/execute`.
-- All 6 node types rendered and executable from the visual editor.
-
-### Phase 4 — Remote Access & Streaming ✅
-
-Real-time remote Unity control through WebRTC.
-
-- Unity C# WebRTC producer with reflection-based `com.unity.webrtc`
-  backend, camera capture, and configurable resolution/frame rate.
-- Rust gateway signaling relay with queue-based message delivery for
-  WebRTC session negotiation.
-- React remote viewer with video streaming, mouse/keyboard/touch input,
-  and AI command data channel.
-- Token-based authentication for all remote session and signaling APIs.
-- ICE server configuration with STUN/TURN support.
-
-### Phase 5 — Multi-AI Platform ✅
-
-Unified skill dispatch across multiple AI coding tools.
-
-- Tool selector with Claude Code, OpenAI Codex, and OpenCode tabs.
-- xterm-based AI terminal panel with tool switching and command history.
-- Skill dispatch panel: compile, test, screenshot, logs, playmode,
-  dynamic-code invocable from any active AI tool.
-- Server-side tool execution API with skill dispatch payload broadcasting.
-- Per-tool session tracking with command history.
-- Sessions persist across tool switches without data loss.
-- Skill install/remove/update CLI commands.
+| Phase | 이름 | 상태 | 설명 |
+|-------|------|------|------|
+| **A** | Core Editor Adapter | ✅ 완료 | LuxEditor, AiBridge, UnityGit, CodexImage, Rust CLI |
+| **B** | AI Event System | ✅ 완료 | 이벤트 로깅, JSONL, Redaction, Sessions API, Static Serving |
+| **C** | Local Web Dashboard | 🔄 진행 중 | React SPA 로컬 대시보드 (compile/test/log/skill) |
+| **D** | CodexImage Visual Editor | ⏳ 계획 | ReactFlow 노드 기반 파이프라인 비주얼 에디터 |
+| **E** | Multi-AI Skill Dispatch | ⏳ 계획 | Claude/Codex/OpenCode 통합 스킬 디스패치 |
 
 ### Out of Scope
+- ❌ WebRTC / RTC Terminal / 원격 비디오 스트리밍
+- ❌ 브라우저에서 Unity Editor 원격 제어
+- ❌ iOS companion app / PWA
+- ❌ Windows/Linux 에디터 지원 (macOS-first)
 
-- iOS companion app / PWA (may become a separate package).
-- Windows and Linux editor support (Phase 1 is macOS-first; cross-platform
-  path handling is prepared but not tested).
+## 빠른 시작
 
-## Unity Editor Menu Reference
+### 사전 요구사항
+- **Unity 6000.0+** (Unity 6.x)
+- **Rust toolchain** (`rustup` + `cargo`)
+- **Node.js 18+** (웹 UI 개발 시)
+- **macOS** (Linux/Windows 경로는 준비됐으나 미테스트)
 
-### Window
-
-| Menu Path | Description |
-| :--- | :--- |
-| `Window > Linalab > Lux Workbench` | Main LUX control window |
-| `Window > Linalab > Lux > Unity Git` | Git status, staging, and diff |
-| `Window > Linalab > Lux > Git History Graph` | Visual Git history graph |
-
-### Tools
-
-| Menu Path | Description |
-| :--- | :--- |
-| `Tools > Linalab > Lux > Server Status` | Gateway server status indicator |
-| `Tools > Linalab > Lux > AI Bridge > Export Unity Context` | Export project context for AI tools |
-| `Tools > Linalab > Lux > AI Bridge > Rebuild Command Registry` | Rebuild automation command registry |
-| `Tools > Linalab > Lux > AI Tool Dispatcher > Connect` | Connect to tool dispatcher |
-| `Tools > Linalab > Lux > AI Tool Dispatcher > Disconnect` | Disconnect tool dispatcher |
-| `Tools > Linalab > Lux > AI Tool Dispatcher > Status` | Show dispatcher status |
-| `Tools > Linalab > Lux > Unity Bridge > Write Lux Bridge Settings` | Write bridge configuration |
-| `Tools > Linalab > Lux > WebRTC Remote > Start Streaming` | Start WebRTC video streaming |
-| `Tools > Linalab > Lux > WebRTC Remote > Stop Streaming` | Stop WebRTC streaming |
-| `Tools > Linalab > Lux > WebRTC Remote > Status` | Show WebRTC streaming status |
-| `Tools > Linalab > Lux > Rust CLI > Install or Update Global Tool` | Install `lux` CLI globally |
-| `Tools > Linalab > Lux > Rust CLI > Copy Terminal Install Command` | Copy install command to clipboard |
-| `Tools > Linalab > Lux > Unity Context > Write Snapshot` | Write Unity context snapshot |
-| `Tools > Linalab > Lux > Unity Context > Refresh Now` | Refresh context immediately |
-| `Tools > Linalab > Lux > Toggle Auto-Compile Watch` | Toggle compile watcher |
-| `Tools > Linalab > Lux > Batch > Compile (Dry Run)` | Dry-run batch compilation |
-| `Tools > Linalab > Lux > Scene Smoke > Create 10 Objects And Test Player` | Scene smoke test |
-| `Tools > Linalab > Lux > Pipeline Web Bridge > Connect` | Connect pipeline to web bridge |
-| `Tools > Linalab > Lux > Pipeline Web Bridge > Disconnect` | Disconnect pipeline web bridge |
-| `Tools > Linalab > Codex Image` | Open Codex Image window |
-| `Tools > Linalab > Codex Image Pipeline` | Open visual pipeline editor |
-
-## CLI Reference
-
-### Server
+### 설치
 
 ```bash
+# 1. LUX 패키지를 Unity 프로젝트의 Packages/에 추가
+# (git dependency 또는 local path)
+
+# 2. Rust CLI 빌드 & 설치
+cd Packages/com.linalab.lux/RustGateway~
+cargo build --release
+cargo run -- install    # 전역 설치
+
+# 3. 게이트웨이 시작
+lux serve --token my-secret-token
+
+# 4. Unity Editor에서 Window > Linalab > Lux Workbench 열기
+```
+
+### CLI 참조
+
+```bash
+# 서버
 lux serve --token <TOKEN> [--host 127.0.0.1] [--port 17340] [--idle-timeout 30]
-```
 
-### Unity Commands
+# Unity 제어
+lux unity status                    # 에디터 연결 상태
+lux unity context                   # 공유 컨텍스트 파일 읽기
+lux unity get-logs                  # 콘솔 로그
+lux unity screenshot                # 에디터 스크린샷
+lux unity launch                    # Unity 에디터 실행
+lux unity control-play-mode         # Play/Pause/Stop
+lux unity execute-dynamic-code      # C# 코드 실행
+lux unity get-hierarchy             # Hierarchy 메타데이터
 
-```bash
-lux unity status                    # Editor connection status
-lux unity context                   # Read shared context file
-lux unity backend-status            # Bridge backend status
-lux unity backend-list-commands     # List available protocol commands
-lux unity get-logs                  # Console log entries
-lux unity clear-console             # Clear console and show counts
-lux unity focus-window              # Focus hierarchy/game window
-lux unity launch                    # Launch Unity editor
-lux unity control-play-mode         # Play/pause/stop playmode
-lux unity screenshot                # Capture editor screenshot
-lux unity simulate-mouse-ui         # Send UI-system mouse event
-lux unity simulate-keyboard         # Send key press
-lux unity simulate-mouse-input      # Send smooth mouse delta
-lux unity record-input              # Record input sequence
-lux unity replay-input              # Replay recorded input
-lux unity execute-dynamic-code      # Execute C# code in editor
-lux unity get-hierarchy             # Hierarchy metadata
-lux unity scene-smoke               # Scene smoke test
-lux unity create-objects            # Create test objects
-lux unity find-game-objects         # Find objects by name
-```
+# 스킬 관리
+lux skill list                      # 설치된 스킬 목록
+lux skill list --json               # JSON 출력
+lux skill info <name>               # 스킬 상세 정보
+lux skill install <name> --source <path|url>
+lux skill remove <name>
+lux skill update <name>
 
-### Skill Management
+# AI 이벤트 로그
+lux ai-log                          # 이벤트 로그 조회
+lux ai-log --json                   # 머신 리더블 출력
 
-```bash
-lux skill list                      # List installed skills
-lux skill list --json               # JSON output
-lux skill info <name>               # Show skill details
-lux skill install <name> --source <path|url>  # Install skill
-lux skill install <name> --source <path> --project  # Project scope
-lux skill remove <name>             # Remove installed skill
-lux skill update <name>             # Update skill from source
-```
+# 빌드 & 테스트
+lux compile [--project-path <path>] # 배치 컴파일
+lux run-tests [--project-path <path>]  # 테스트 실행
+lux run-tests --playmode-platform   # PlayMode 테스트
 
-### Build & Test
+# 세션 관리
+lux session list                    # 활성 세션 목록
+lux session create --name "work"    # 새 세션 생성
 
-```bash
-lux compile [--project-path <path>] # Batch compile
-lux run-tests [--project-path <path>]  # Run tests
-lux run-tests --playmode-platform   # Playmode tests
+# 설정
+lux config                          # 현재 설정 확인
 ```
 
 ## API Reference
 
 ### Health & Lifecycle
-
 | Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| GET | `/health` | Server readiness and protocol version |
-| GET | `/api/health` | Uptime and status report |
-| POST | `/api/heartbeat` | Reset idle timer, returns `{ "status": "alive", "uptime_seconds": N }` |
+|--------|----------|-------------|
+| GET | `/health` | Server readiness |
+| GET | `/api/health` | Uptime & status |
+| POST | `/api/heartbeat` | Reset idle timer |
 
-### Sessions & Pipeline
-
+### Sessions
 | Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| GET/POST | `/api/sessions` | Session management |
-| GET/POST/DELETE | `/api/pipeline` | Pipeline operations |
+|--------|----------|-------------|
+| GET/POST | `/api/sessions` | List/create sessions |
+| GET | `/api/sessions/:id` | Get session detail |
+| PUT | `/api/sessions/:id` | Update session |
+| DELETE | `/api/sessions/:id` | Delete session |
 
-### Graphs (Visual Pipeline)
-
+### Graphs (CodexImage Pipeline)
 | Method | Endpoint | Description |
-| :--- | :--- | :--- |
+|--------|----------|-------------|
 | GET/POST | `/api/graphs` | List/create graphs |
 | GET/PUT/DELETE | `/api/graphs/:id` | Graph CRUD |
-| POST | `/api/graphs/:id/execute` | Execute a graph |
+| POST | `/api/graphs/:id/execute` | Execute graph |
 
 ### Tools (Multi-AI)
-
 | Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| GET | `/api/tools` | List available tools |
-| GET/POST/DELETE | `/api/tools/sessions` | Tool session management |
-| POST | `/api/tools/execute` | Execute tool command or skill |
-| GET | `/api/tools/executions/:id` | Get execution status |
+|--------|----------|-------------|
+| GET | `/api/tools` | Available tools |
+| GET/POST/DELETE | `/api/tools/sessions` | Tool sessions |
+| POST | `/api/tools/execute` | Execute command/skill |
+| GET | `/api/tools/executions/:id` | Execution status |
 
-### Remote Access (WebRTC)
-
+### AI Events
 | Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| GET/POST/DELETE | `/api/remote/sessions` | Remote session management |
-| GET/POST | `/api/remote/signaling/:session_id` | WebRTC signaling relay |
+|--------|----------|-------------|
+| GET | `/api/ai-log` | Query event log |
+| WS | `/events` | Real-time event stream |
 
-### Events & Config
-
+### Config & Schema
 | Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| WS | `/events` | Real-time event stream (WebSocket) |
-| GET | `/api/webrtc-config` | STUN/TURN ICE server configuration |
-| GET | `/api/node-types` | Static node type registry |
+|--------|----------|-------------|
 | GET | `/schema` | Example event envelope |
+| GET | `/api/node-types` | Node type registry |
+| GET | `/ui/*` | Static SPA files |
 
-## Entry Points
+## Unity Editor 메뉴
 
-- `Window > Linalab > Lux Workbench`
-- `Window > Linalab > Lux > Unity Git`
-- `Tools > Linalab > Lux > AI Bridge > Export Unity Context`
+### Window
+| Menu Path | Description |
+|-----------|-------------|
+| `Window > Linalab > Lux Workbench` | LUX 메인 컨트롤 윈도우 |
+| `Window > Linalab > Lux > Unity Git` | Git status, staging, diff |
+| `Window > Linalab > Lux > Git History Graph` | 시각화 Git 히스토리 |
 
-## Structure
+### Tools (주요)
+| Menu Path | Description |
+|-----------|-------------|
+| `Tools > Linalab > Lux > Server Status` | 게이트웨이 상태 |
+| `Tools > Linalab > Lux > AI Bridge > Export Unity Context` | AI 툴용 컨텍스트 export |
+| `Tools > Linalab > Lux > Rust CLI > Install or Update Global Tool` | lux CLI 전역 설치 |
+| `Tools > Linalab > Lux > Toggle Auto-Compile Watch` | 컴파일 와처 토글 |
+| `Tools > Linalab > Lux > Batch > Compile (Dry Run)` | 배치 컴파일 (dry-run) |
+| `Tools > Linalab > Codex Image` | CodexImage 윈도우 |
+| `Tools > Linalab > Codex Image Pipeline` | 비주얼 파이프라인 에디터 |
 
-```text
+## 프로젝트 구조
+
+```
 com.linalab.lux/
-├── LuxEditor/           # Adapter workbench, automation gateway, execution policy
-│   ├── LuxAutomationGateway.cs        # Automation coordinator (partial)
-│   ├── LuxAutomation*Commands.cs      # Command groups (8 partial files)
-│   ├── LuxWebRTCProducer.cs           # WebRTC coordinator (partial)
-│   ├── LuxWebRTC*.cs                  # WebRTC subsystems (6 partial files)
-│   ├── LuxAIToolDispatcher.cs         # AI tool execution bridge
-│   ├── LuxServerStatusIndicator.cs    # Gateway status UI
-│   ├── LuxWorkbenchWindow.cs          # Main workbench window
-│   └── ...
-├── AiBridgeEditor/      # AI Bridge TCP server and protocol handler
-│   ├── UnityAiBridgeTcpServer.cs      # TCP server (1,898 lines)
-│   └── UnityAiBridgeProtocol.cs       # Protocol handler (830 lines)
-├── UnityGitEditor/      # Unity Git integration
-├── CodexImage/          # Integrated Codex Image generation and pipeline tooling
-│   ├── Editor/Pipeline/               # Pipeline engine and web bridge
-│   ├── Editor/Backends/               # Codex CLI and segmentation backends
-│   └── Editor/Exporters/              # Unity 2D, Spine, sprite sheet exporters
-├── RustGateway~/        # Rust WebSocket/HTTP gateway and CLI
-│   ├── src/main.rs                    # CLI entry (2,836 lines)
-│   ├── src/server.rs                  # HTTP/WebSocket server (2,439 lines)
-│   ├── src/protocol.rs                # Event schema
-│   ├── tests/                         # 37 smoke tests
-│   └── ui-src/                        # React 19 + TypeScript SPA (strict mode)
-├── McpHelper~/          # Node.js MCP helper
-├── Skills/lux-unity/    # Core AI skill (manifest + SKILL.md + 9 references)
-├── LuxEditorTests/      # LuxEditor unit tests
-├── AiBridgeTests/       # AI Bridge unit tests
-├── UnityGitTests/       # Unity Git unit tests
-├── CodexImage/Tests/    # CodexImage unit tests (11 files)
-├── LuxTests/            # Automation policy tests
-└── seeds/               # Seed specifications for skill provisioning
+├── LuxEditor/              # C# 에디터 어댑터 (LuxAutomationGateway 등)
+│   ├── LuxAutomationGateway.cs       # 자동화 코디네이터 (partial ~10파일)
+│   ├── LuxWorkbenchWindow.cs         # 메인 워크벤치
+│   ├── LuxAIToolDispatcher.cs        # AI 툴 실행 브리지
+│   ├── LuxServerStatusIndicator.cs   # 서버 상태 UI
+│   └── LuxRuntimeEvent*.cs           # 런타임 이벤트 채널
+├── AiBridgeEditor/         # TCP 서버 + 프로토콜 (~1,900줄)
+├── UnityGitEditor/         # Git 통합 (status/staging/history/branches)
+├── CodexImage/             # 이미지 생성 파이프라인
+│   ├── Editor/Pipeline/    # 파이프라인 엔진 + 웹 브리지
+│   ├── Editor/Backends/    # Codex CLI / Segmentation 백엔드
+│   └── Editor/Exporters/   # Unity 2D, Spine, sprite sheet
+├── RustGateway~/           # Rust HTTP/WS 게이트웨이 + CLI
+│   ├── src/main.rs         # CLI 엔트리 (serve/unity/skill/ai-log/...)
+│   ├── src/server.rs       # Axum 서버 (health/schema/events/sessions/graphs)
+│   ├── src/ai_log.rs       # AI 이벤트 로깅 (EventSource enum, JSONL, redaction)
+│   ├── src/skill_adapter/  # 스킬 어댑터 (5모듈: adaptation/compatibility/metadata/slimming)
+│   ├── src/protocol.rs     # 이벤트 envelope 스키마
+│   ├── tests/              # 10개 smoke test 파일 (286/289 pass)
+│   └── ui-src/             # React 19 + TypeScript SPA (local dashboard)
+├── McpHelper~/             # Node.js MCP 헬퍼
+├── Skills/lux-unity/       # 코어 AI 스킬 (manifest + SKILL.md + references)
+├── *Tests/                 # C# (NUnit) + Rust (cargo test) 테스트 스위트
+└── seeds/                  # Seed specification 파일
 ```
 
-## Test Coverage
+## 테스트 커버리지
 
-| Suite | Tests | Files |
-| :--- | :--- | :--- |
-| Rust unit tests | 24 | `server.rs` |
-| Rust smoke tests | 37 | `gateway_cli_smoke.rs` |
-| C# test files | 27 | Across `*Tests/Editor/` directories |
+| Suite | Tests | Status |
+|-------|-------|--------|
+| Rust unit tests (server.rs) | 134 | ✅ All pass |
+| Rust event_schema | 24 | ✅ All pass |
+| Rust cli_api_contract | 40 | ✅ All pass |
+| Rust event_schema_smoke | 24 | ✅ All pass |
+| Rust gateway_cli_smoke | 52/55 | ⚠️ 3 pre-existing |
+| Rust sessions_api_smoke | 8 | ✅ New (P7) |
+| Rust static_serving_smoke | 4 | ✅ New (P7) |
+| Rust redact_patterns_smoke | 22 | ✅ New (P7) |
+| C# test files | ~27 | Across *Tests/Editor/ |
+| **Total** | **~335** | **~98.9% pass** |
+
+## 기술 스택
+
+| 영역 | 기술 |
+|------|------|
+| Gateway | Rust, Axum 0.7, tokio 1, serde, tower-http 0.6 |
+| CLI | Rust, clap 4.5, anyhow |
+| Web UI | React 19, TypeScript strict, ReactFlow, Vite, Zustand |
+| Editor C# | Unity 6000.0+, UIToolkit, NUnit, Newtonsoft.Json |
+| Desktop (optional) | Tauri v2 (Rust + system tray) |
+| Protocol | JSON envelopes over HTTP/WebSocket/TCP |
+
+## 컨벤션
+
+### Rust (`RustGateway~/`)
+- Axum 0.7, tokio 1, clap 4.5, anyhow, serde
+- `anyhow` for logic errors, `eprintln` for user output
+- **No TODO/FIXME/HACK comments**
+- New endpoints → always add matching tests
+
+### TypeScript (`ui-src/`)
+- React 19 functional components + hooks, strict mode
+- No mock/fallback data in API hooks
+- State: useState, useRef, useCallback, useEffect
+
+### C# (Editor)
+- Namespace: `UnityEditor`, Assembly: `Linalab.LuxEditor`
+- Class prefix: `Lux`, large files use partial classes
+- Tests: NUnit `[Test]` in `*Tests/Editor/`
 
 ## Acknowledgments
 
-LUX was heavily inspired by and references significant portions of
-[**unity-cli-loop**](https://github.com/hatayama/unity-cli-loop) by
-[hatayama](https://github.com/hatayama) (formerly uLoopMCP).
+LUX was heavily inspired by [**unity-cli-loop**](https://github.com/hatayama/unity-cli-loop) by [hatayama](https://github.com/hatayama) (formerly uLoopMCP, 346⭐).
 
-The AI Bridge module (`AiBridgeEditor/`), including the TCP server, protocol
-handler, dynamic code execution, input recording/replay, and the associated
-skill/reference structure, was derived from unity-cli-loop. We are grateful for
-the foundational work that made this project possible.
+The AI Bridge module (`AiBridgeEditor/`), including the TCP server, protocol handler,
+dynamic code execution, input recording/replay, and skill/reference structure,
+was derived from unity-cli-loop.
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+[MIT License](LICENSE)
