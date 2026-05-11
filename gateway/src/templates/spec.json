@@ -1,0 +1,59 @@
+{
+  "version": "1.0.0",
+  "project_id": "",
+  "project_name": "",
+  "created_at": "",
+  "updated_at": "",
+  "source": "lux-init",
+  "status": "Draft",
+  "domains": {
+    "design": null,
+    "architecture": null,
+    "art_style": null,
+    "audio": null,
+    "narrative": null,
+    "levels": null,
+    "ui_ux": null,
+    "custom": {}
+  },
+  "schell_evaluation": {
+    "phase1_experience": { "name": "Experience Lens", "status": "Missing", "summary": null, "score": 0.0, "questions": [] },
+    "phase2_tetrad": {
+      "mechanics": { "status": "Missing", "description": null, "score": 0.0 },
+      "story": { "status": "Missing", "description": null, "score": 0.0 },
+      "aesthetics": { "status": "Missing", "description": null, "score": 0.0 },
+      "technology": { "status": "Missing", "description": null, "score": 0.0 },
+      "harmony_score": 0.0
+    },
+    "phase3_core_loop": { "name": "Core Loop Stress Test", "status": "Missing", "summary": null, "score": 0.0, "questions": [] },
+    "phase4_motivation": { "name": "Player Motivation", "status": "Missing", "summary": null, "score": 0.0, "questions": [] },
+    "phase5_assessment": { "status": "Missing", "viability_score": 0.0, "strengths": [], "risks": [], "recommendations": [], "summary": null }
+  },
+  "overall_ambiguity": 1.0,
+  "unity": {
+    "required_version": null,
+    "detected_version": null,
+    "render_pipeline": null,
+    "scripting_backend": null
+  },
+  "targets": {
+    "platforms": [],
+    "min_sdk": {},
+    "test_platform": null
+  },
+  "packages": {
+    "required": [],
+    "forbidden": [],
+    "detected": []
+  },
+  "testing": {
+    "framework": null,
+    "strategy": null,
+    "coverage": false
+  },
+  "glossary": {
+    "path": "glossary.md",
+    "last_updated": null,
+    "term_count": 0
+  }
+}
