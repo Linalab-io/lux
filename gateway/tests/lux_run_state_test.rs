@@ -412,3 +412,60 @@ fn test_canonical_stop_reasons_and_numeric_defaults() {
     assert_eq!(defaults.stagnation_limit, 3);
     assert_eq!(defaults.consecutive_failure_limit, 3);
 }
+
+#[test]
+fn test_update_with_seq_check_success() {
+    let temp_dir = TestTempDir::new("seq-check-success");
+    let initial = RunState::idle(temp_dir.path()).expect("idle state should be created");
+    initial.save(temp_dir.path()).expect("initial save should succeed");
+    assert_eq!(initial.seq, 0);
+
+    let updated = RunState::update_with_seq_check(temp_dir.path(), 0, None, |state| {
+        state.status = "Planning".to_string();
+    })
+    .expect("update with correct seq should succeed");
+
+    assert_eq!(updated.seq, 1);
+    assert_eq!(updated.status, "Planning");
+}
+
+#[test]
+fn test_update_with_seq_check_stale_seq_returns_error() {
+    let temp_dir = TestTempDir::new("seq-check-stale");
+    let initial = RunState::idle(temp_dir.path()).expect("idle state should be created");
+    initial.save(temp_dir.path()).expect("initial save should succeed");
+
+    let err = RunState::update_with_seq_check(temp_dir.path(), 99, None, |_| {})
+        .expect_err("stale seq should return error");
+
+    assert!(
+        err.to_string().contains("seq conflict"),
+        "error should mention seq conflict, got: {err}"
+    );
+}
+
+#[test]
+fn test_update_with_seq_check_concurrent_writes_second_fails() {
+    let temp_dir = TestTempDir::new("seq-check-concurrent");
+    let initial = RunState::idle(temp_dir.path()).expect("idle state should be created");
+    initial.save(temp_dir.path()).expect("initial save should succeed");
+
+    RunState::update_with_seq_check(temp_dir.path(), 0, None, |state| {
+        state.status = "Planning".to_string();
+    })
+    .expect("first write should succeed");
+
+    let err = RunState::update_with_seq_check(temp_dir.path(), 0, None, |state| {
+        state.status = "Interrupted".to_string();
+    })
+    .expect_err("second write with stale seq should fail");
+
+    assert!(
+        err.to_string().contains("seq conflict"),
+        "second concurrent write should report seq conflict, got: {err}"
+    );
+
+    let final_state = RunState::load(temp_dir.path()).expect("state should be loadable");
+    assert_eq!(final_state.seq, 1);
+    assert_eq!(final_state.status, "Planning");
+}

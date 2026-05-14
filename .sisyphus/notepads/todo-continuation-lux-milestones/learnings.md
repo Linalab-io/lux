@@ -90,3 +90,12 @@
 - Unity executable discovery treats empty or missing executable paths as a hard failure with `Unity executable unavailable; milestone push blocked`.
 - Scene smoke fails on exit failure, timeout, or any case-insensitive `error` in stderr/log; logs and stdout/stderr evidence are recorded under `.lux/verification/t3/<domain>/`.
 - Targeted verification passed: `cargo test --test lux_verification_test`; build passed: `cargo build`.
+
+## [Task 2] Completed
+- All direct `fs.writeFileSync` calls to `.lux/continuation-state.json` in the plugin replaced with async HTTP PUT to `PUT /api/lux/continuation/state`.
+- `writeContinuationState(opts: ContinuationStateWriteOptions, state: ContinuationState): Promise<ContinuationWriteResult>` — opts carries `{ projectPath, gatewayUrl, expectedSeq }`.
+- `ContinuationOrchestrator` tracks `lastKnownSeq: number = 0`; updates after each successful write via `result.seq`.
+- Server handler acquires `continuation_write_lock` mutex, calls `RunState::update_with_seq_check`, returns HTTP 409 on seq conflict (error string contains "seq conflict").
+- `RunState::update_with_seq_check(project_path, expected_seq, expected_status, patch)` validates seq, applies patch, increments seq, saves atomically.
+- vitest: 343/343 passed (28 test files); `cargo test --test lux_run_state_test`: 17/17 passed (3 new seq-check tests added); `cargo build` clean; `npx tsc --noEmit` 0 errors.
+- Evidence files: `.sisyphus/evidence/task-2-plugin-api-write.txt`, `task-2-server-canonical-write.txt`, `task-2-stale-seq-conflict.txt`.

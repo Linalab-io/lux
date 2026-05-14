@@ -23,7 +23,7 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, Mutex, RwLock};
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
@@ -34,7 +34,9 @@ use crate::{
     lux_event_log::{
         EventFilter, EventLogStore, FileEventLogStore, PlayEvent, PlayEventType, SessionMetadata,
     },
+    lux_events::LuxEvent,
     lux_loop::{self, LoopOrchestrator, LoopSnapshot},
+    lux_roadmap::{self, REMOTE_WEBRTC_EXPERIMENTAL_FLAG},
     lux_spec::{self, SpecProject},
     lux_spec_loop::{self, SpecLoopRun},
     lux_terminal::{self, TerminalManager, TerminalOutput, TerminalSession},
@@ -81,6 +83,7 @@ pub struct GatewayState {
     pub build_manager: Arc<Mutex<crate::lux_build::BuildManager>>,
     pub terminal_manager: Arc<Mutex<TerminalManager>>,
     pub loop_orchestrator: Arc<RwLock<Option<LoopOrchestrator>>>,
+    pub continuation_write_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,6 +121,13 @@ struct HealthResponse {
     websocket_path: &'static str,
     history_capacity: usize,
     uptime_seconds: u64,
+    experimental_features: ExperimentalFeaturesResponse,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExperimentalFeaturesResponse {
+    remote_webrtc: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -597,6 +607,41 @@ struct LuxAmbiguityResponse {
     domains: HashMap<String, f64>,
 }
 
+#[derive(Debug, Serialize)]
+struct ProgressSummaryResponse {
+    spec: SpecProgressSummary,
+    kanban: KanbanProgressSummary,
+    #[serde(rename = "loop")]
+    loop_summary: LoopProgressSummary,
+}
+
+#[derive(Debug, Serialize)]
+struct SpecProgressSummary {
+    overall_ambiguity: f64,
+    domains: HashMap<String, DomainProgressSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct DomainProgressSummary {
+    ambiguity: f64,
+    status: String,
+    requirements_total: u32,
+    requirements_done: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct KanbanProgressSummary {
+    by_status: HashMap<String, u32>,
+    total: u32,
+    active_count: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct LoopProgressSummary {
+    state: String,
+    iteration: Option<u32>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StartWebglBuildRequest {
@@ -730,6 +775,7 @@ impl GatewayState {
             )),
             terminal_manager: Arc::new(Mutex::new(TerminalManager::new())),
             loop_orchestrator: Arc::new(RwLock::new(None)),
+            continuation_write_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -759,6 +805,28 @@ impl GatewayState {
         supplied
             .filter(|value| !value.is_empty())
             .is_some_and(|value| value == self.config.token)
+    }
+
+    fn experimental_features(&self) -> ExperimentalFeaturesResponse {
+        ExperimentalFeaturesResponse {
+            remote_webrtc: self.remote_webrtc_experimental_enabled(),
+        }
+    }
+
+    fn remote_webrtc_experimental_enabled(&self) -> bool {
+        self.config
+            .project_root
+            .as_deref()
+            .is_some_and(|project_root| match lux_roadmap::load(project_root) {
+                Ok(roadmap) => roadmap.flag_enabled(REMOTE_WEBRTC_EXPERIMENTAL_FLAG),
+                Err(error) => {
+                    tracing::info!(
+                        %error,
+                        "Lux remote/WebRTC hidden experimental gate disabled by roadmap lookup"
+                    );
+                    false
+                }
+            })
     }
 
     fn ai_log_path(&self) -> Result<Option<PathBuf>, anyhow::Error> {
@@ -797,6 +865,11 @@ pub fn router(state: GatewayState) -> Router {
         .route("/init", post(init_lux))
         .route("/spec", get(get_spec).put(put_spec))
         .route("/spec/ambiguity", get(get_spec_ambiguity))
+        .route("/progress/summary", get(get_progress_summary))
+        .route(
+            "/continuation/state",
+            get(get_continuation_state).put(update_continuation_state),
+        )
         .route("/spec/validate", post(validate_spec))
         .route("/spec/:domain", get(get_spec_domain).put(put_spec_domain))
         .nest("/kanban", kanban_router);
@@ -822,7 +895,9 @@ pub fn router(state: GatewayState) -> Router {
         .route("/status", get(get_lux_loop_status))
         .route("/pause", post(pause_lux_loop))
         .route("/resume", post(resume_lux_loop))
-        .route("/approve", post(approve_lux_loop));
+        .route("/approve", post(approve_lux_loop))
+        .route("/play-started", post(record_loop_play_started))
+        .route("/feedback", post(submit_loop_feedback));
     let spec_loop_router = Router::new()
         .route("/start", post(start_spec_loop))
         .route("/status", get(get_spec_loop_status))
@@ -922,20 +997,20 @@ pub fn router(state: GatewayState) -> Router {
         .route("/api/node-types", get(list_node_types))
         .route("/api/skills", get(list_skills))
         .route("/api/skills/:name/adaptation", get(get_skill_adaptation))
+        .route("/api/lux/experimental-flags", get(get_experimental_flags))
         .nest("/api/lux/build", build_router)
         .nest("/api/lux/play", play_router)
         .nest("/api/lux/verify", verify_router)
         .nest("/api/lux/loop", loop_router)
         .nest("/api/lux/spec-loop", spec_loop_router)
         .nest("/api/lux/terminal", terminal_router)
+        .nest("/api/lux/runs", crate::lux_api::build_lux_api_router())
         .nest("/api/lux", lux_router)
         .nest("/api/addons", crate::addon_routes::routes())
         .nest("/api/unity", crate::unity_launch::routes())
         .nest_service(
             "/ui",
-            ServeDir::new(&ui_dir)
-                .append_index_html_on_directories(true)
-                .fallback(ServeFile::new(ui_dir.join("index.html"))),
+            ServeDir::new(&ui_dir).append_index_html_on_directories(true),
         )
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn_with_state(
@@ -961,7 +1036,14 @@ async fn health(State(state): State<GatewayState>) -> Json<HealthResponse> {
         websocket_path: "/events",
         history_capacity: state.config.history_capacity,
         uptime_seconds: state.uptime_seconds(),
+        experimental_features: state.experimental_features(),
     })
+}
+
+async fn get_experimental_flags(
+    State(state): State<GatewayState>,
+) -> Json<ExperimentalFeaturesResponse> {
+    Json(state.experimental_features())
 }
 
 async fn heartbeat(State(state): State<GatewayState>) -> Json<HeartbeatResponse> {
@@ -1259,13 +1341,21 @@ async fn schema() -> Json<EventEnvelope> {
 }
 
 async fn init_lux(
-    State(_state): State<GatewayState>,
+    State(state): State<GatewayState>,
     Json(request): Json<LuxInitRequest>,
 ) -> Result<(StatusCode, Json<SpecProject>), Response> {
-    lux_spec::lux_init(Path::new(&request.project_path))
-        .and_then(|_| lux_spec::lux_load(Path::new(&request.project_path)))
-        .map(|spec| (StatusCode::CREATED, Json(spec)))
-        .map_err(internal_error)
+    let project_path = Path::new(&request.project_path);
+    lux_spec::lux_init(project_path).map_err(internal_error)?;
+    let spec = lux_spec::lux_load(project_path).map_err(internal_error)?;
+    publish_lux_progress_event(
+        &state,
+        &request.project_path,
+        spec_progress_event(&spec),
+        "lux-spec",
+        "Lux spec progress updated",
+    )
+    .await;
+    Ok((StatusCode::CREATED, Json(spec)))
 }
 
 async fn get_spec(
@@ -1278,13 +1368,21 @@ async fn get_spec(
 }
 
 async fn put_spec(
-    State(_state): State<GatewayState>,
+    State(state): State<GatewayState>,
     Json(request): Json<LuxSpecRequest>,
 ) -> Result<Json<SpecProject>, Response> {
-    lux_spec::lux_save(Path::new(&request.project_path), &request.spec)
-        .and_then(|_| lux_spec::lux_load(Path::new(&request.project_path)))
-        .map(Json)
-        .map_err(internal_error)
+    let project_path = Path::new(&request.project_path);
+    lux_spec::lux_save(project_path, &request.spec).map_err(internal_error)?;
+    let spec = lux_spec::lux_load(project_path).map_err(internal_error)?;
+    publish_lux_progress_event(
+        &state,
+        &request.project_path,
+        spec_progress_event(&spec),
+        "lux-spec",
+        "Lux spec progress updated",
+    )
+    .await;
+    Ok(Json(spec))
 }
 
 async fn get_spec_domain(
@@ -1299,13 +1397,22 @@ async fn get_spec_domain(
 }
 
 async fn put_spec_domain(
-    State(_state): State<GatewayState>,
+    State(state): State<GatewayState>,
     AxumPath(domain): AxumPath<String>,
     Json(request): Json<LuxDomainRequest>,
 ) -> Result<Json<serde_json::Value>, Response> {
-    lux_spec::lux_save_domain(Path::new(&request.project_path), &domain, &request.content)
-        .map(|_| Json(json!({ "ok": true })))
-        .map_err(internal_error)
+    let project_path = Path::new(&request.project_path);
+    lux_spec::lux_save_domain(project_path, &domain, &request.content).map_err(internal_error)?;
+    let spec = lux_spec::lux_load_or_init(project_path).map_err(internal_error)?;
+    publish_lux_progress_event(
+        &state,
+        &request.project_path,
+        spec_progress_event(&spec),
+        "lux-spec",
+        "Lux spec progress updated",
+    )
+    .await;
+    Ok(Json(json!({ "ok": true })))
 }
 
 fn play_log_store(project_path: &str) -> FileEventLogStore {
@@ -1507,6 +1614,118 @@ async fn get_spec_ambiguity(
     }))
 }
 
+async fn get_progress_summary(
+    State(state): State<GatewayState>,
+    Query(query): Query<LuxProjectQuery>,
+) -> Result<(StatusCode, Json<ProgressSummaryResponse>), Response> {
+    let project_path = Path::new(&query.project_path);
+    if !project_path.join(".lux/spec.json").is_file() {
+        return Ok((StatusCode::NOT_FOUND, Json(default_progress_summary())));
+    }
+
+    let spec = lux_spec::lux_load(project_path).map_err(internal_error)?;
+    let tickets = FileTicketStore::new(project_path)
+        .list(TicketFilter::default())
+        .map_err(internal_error)?;
+    let loop_snapshot = state
+        .loop_orchestrator
+        .read()
+        .await
+        .as_ref()
+        .map(LoopOrchestrator::snapshot);
+
+    Ok((
+        StatusCode::OK,
+        Json(ProgressSummaryResponse {
+            spec: spec_progress_summary(&spec),
+            kanban: kanban_progress_summary(&tickets),
+            loop_summary: loop_progress_summary(loop_snapshot),
+        }),
+    ))
+}
+
+async fn get_continuation_state(
+    State(_state): State<GatewayState>,
+    Query(query): Query<LuxProjectQuery>,
+) -> Result<Json<crate::lux_continuation_state::ContinuationState>, Response> {
+    let project_path = Path::new(&query.project_path);
+    let state = crate::lux_continuation_state::ContinuationState::load(project_path)
+        .map_err(internal_error)?;
+    Ok(Json(state))
+}
+
+#[derive(Debug, Deserialize)]
+struct ContinuationStateUpdateRequest {
+    expected_seq: u64,
+    expected_status: Option<String>,
+    session_id: Option<String>,
+    continuation_count: Option<u32>,
+    stagnation_count: Option<u32>,
+    consecutive_failures: Option<u32>,
+    last_ambiguity: Option<String>,
+    last_ticket_baseline: Option<String>,
+    current_ticket_id: Option<String>,
+    status: Option<String>,
+    started_at: Option<String>,
+    stop_reason: Option<String>,
+}
+
+async fn update_continuation_state(
+    State(state): State<GatewayState>,
+    Query(query): Query<LuxProjectQuery>,
+    Json(body): Json<ContinuationStateUpdateRequest>,
+) -> Result<Json<crate::lux_run_state::RunState>, (axum::http::StatusCode, String)> {
+    let project_path_str = query.project_path.clone();
+    let project_path = Path::new(&project_path_str);
+
+    let _lock = state.continuation_write_lock.lock().await;
+
+    let expected_seq = body.expected_seq;
+    let expected_status = body.expected_status.clone();
+
+    let run_state = crate::lux_run_state::RunState::update_with_seq_check(
+        project_path,
+        expected_seq,
+        expected_status.as_deref(),
+        |s| {
+            if let Some(v) = body.session_id.clone() {
+                s.executor.job_id = Some(v);
+            }
+            if let Some(v) = body.continuation_count {
+                s.continuation_count = v;
+            }
+            if let Some(v) = body.stagnation_count {
+                s.stagnation_count = v;
+            }
+            if let Some(v) = body.consecutive_failures {
+                s.consecutive_failures = v;
+            }
+            if let Some(v) = body.current_ticket_id.clone() {
+                s.current_ticket_id = Some(v);
+            }
+            if let Some(v) = body.status.clone() {
+                s.status = v;
+            }
+            if let Some(v) = body.started_at.clone() {
+                s.resume.previous_status = Some(v);
+            }
+            if let Some(v) = body.stop_reason.clone() {
+                s.last_error = Some(v);
+            }
+        },
+    )
+    .map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("seq conflict") || msg.contains("status conflict") {
+            (axum::http::StatusCode::CONFLICT, msg)
+        } else {
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg)
+        }
+    })?;
+
+    Ok(Json(run_state))
+}
+
 async fn validate_spec(
     State(_state): State<GatewayState>,
     Json(request): Json<LuxInitRequest>,
@@ -1523,9 +1742,12 @@ async fn run_verification(
     State(_state): State<GatewayState>,
     Json(request): Json<LuxInitRequest>,
 ) -> Result<Json<VerificationResult>, Response> {
-    lux_verification::verify_all(Path::new(&request.project_path))
-        .map(Json)
-        .map_err(internal_error)
+    lux_verification::verify_all(
+        Path::new(&request.project_path),
+        lux_verification::VerificationMode::Cached,
+    )
+    .map(Json)
+    .map_err(internal_error)
 }
 
 async fn get_latest_verification_api(
@@ -1792,6 +2014,29 @@ async fn approve_lux_loop(
     orchestrator.approve_next().map(Json).map_err(bad_request)
 }
 
+async fn record_loop_play_started(
+    State(state): State<GatewayState>,
+) -> Result<Json<LoopSnapshot>, Response> {
+    let mut guard = state.loop_orchestrator.write().await;
+    let orchestrator = guard.as_mut().ok_or_else(not_found)?;
+    orchestrator
+        .record_play_started()
+        .map(Json)
+        .map_err(bad_request)
+}
+
+async fn submit_loop_feedback(
+    State(state): State<GatewayState>,
+    Json(body): Json<Value>,
+) -> Result<Json<LoopSnapshot>, Response> {
+    let mut guard = state.loop_orchestrator.write().await;
+    let orchestrator = guard.as_mut().ok_or_else(not_found)?;
+    orchestrator
+        .record_feedback(&body)
+        .map(Json)
+        .map_err(bad_request)
+}
+
 fn loop_event_router(state: GatewayState) -> crate::lux_events::EventRouter {
     let mut router = crate::lux_events::EventRouter::new();
     router.register(
@@ -1892,9 +2137,10 @@ async fn list_tickets(
 }
 
 async fn create_ticket(
-    State(_state): State<GatewayState>,
+    State(state): State<GatewayState>,
     Json(request): Json<CreateTicketRequest>,
 ) -> Result<(StatusCode, Json<Ticket>), Response> {
+    let project_path = request.project_path.clone();
     let now = now_iso8601_millis();
     let ticket = Ticket {
         id: Uuid::new_v4().to_string(),
@@ -1909,10 +2155,11 @@ async fn create_ticket(
         created_at: now.clone(),
         updated_at: now,
     };
-    FileTicketStore::new(&request.project_path)
+    let created = FileTicketStore::new(&project_path)
         .create(ticket)
-        .map(|created| (StatusCode::CREATED, Json(created)))
-        .map_err(internal_error)
+        .map_err(internal_error)?;
+    publish_kanban_progress_event(&state, &project_path, Some(created.id.clone())).await?;
+    Ok((StatusCode::CREATED, Json(created)))
 }
 
 async fn get_ticket(
@@ -1928,20 +2175,21 @@ async fn get_ticket(
 }
 
 async fn update_ticket(
-    State(_state): State<GatewayState>,
+    State(state): State<GatewayState>,
     AxumPath(id): AxumPath<String>,
     Json(request): Json<UpdateTicketRequest>,
 ) -> Result<Json<Ticket>, Response> {
     let mut ticket = request.ticket;
     ticket.updated_at = now_iso8601_millis();
-    FileTicketStore::new(&request.project_path)
+    let updated = FileTicketStore::new(&request.project_path)
         .update(&id, ticket)
-        .map(Json)
-        .map_err(internal_error)
+        .map_err(internal_error)?;
+    publish_kanban_progress_event(&state, &request.project_path, Some(updated.id.clone())).await?;
+    Ok(Json(updated))
 }
 
 async fn update_ticket_status(
-    State(_state): State<GatewayState>,
+    State(state): State<GatewayState>,
     AxumPath(id): AxumPath<String>,
     Json(request): Json<UpdateTicketStatusRequest>,
 ) -> Result<Json<Ticket>, Response> {
@@ -1952,7 +2200,9 @@ async fn update_ticket_status(
         .ok_or_else(not_found)?;
     ticket.status = request.new_status;
     ticket.updated_at = now_iso8601_millis();
-    store.update(&id, ticket).map(Json).map_err(kanban_error)
+    let updated = store.update(&id, ticket).map_err(kanban_error)?;
+    publish_kanban_progress_event(&state, &request.project_path, Some(updated.id.clone())).await?;
+    Ok(Json(updated))
 }
 
 async fn get_blockers(
@@ -1967,7 +2217,7 @@ async fn get_blockers(
 }
 
 async fn add_blocker(
-    State(_state): State<GatewayState>,
+    State(state): State<GatewayState>,
     AxumPath(id): AxumPath<String>,
     Json(request): Json<BlockerRequest>,
 ) -> Result<Json<Vec<Ticket>>, Response> {
@@ -1983,13 +2233,15 @@ async fn add_blocker(
     {
         ticket.blockers.push(request.blocker_ticket_id);
         ticket.updated_at = now_iso8601_millis();
-        store.update(&id, ticket).map_err(internal_error)?;
+        let updated = store.update(&id, ticket).map_err(internal_error)?;
+        publish_kanban_progress_event(&state, &request.project_path, Some(updated.id.clone()))
+            .await?;
     }
     store.check_blockers(&id).map(Json).map_err(internal_error)
 }
 
 async fn remove_blocker(
-    State(_state): State<GatewayState>,
+    State(state): State<GatewayState>,
     AxumPath(id): AxumPath<String>,
     Json(request): Json<BlockerRequest>,
 ) -> Result<Json<Vec<Ticket>>, Response> {
@@ -2004,7 +2256,9 @@ async fn remove_blocker(
         .retain(|blocker| blocker != &request.blocker_ticket_id);
     if ticket.blockers.len() != original_len {
         ticket.updated_at = now_iso8601_millis();
-        store.update(&id, ticket).map_err(internal_error)?;
+        let updated = store.update(&id, ticket).map_err(internal_error)?;
+        publish_kanban_progress_event(&state, &request.project_path, Some(updated.id.clone()))
+            .await?;
     }
     store.check_blockers(&id).map(Json).map_err(internal_error)
 }
@@ -2042,6 +2296,244 @@ fn kanban_error(error: anyhow::Error) -> Response {
         Json(json!({ "error": error.to_string() })),
     )
         .into_response()
+}
+
+async fn publish_lux_progress_event(
+    state: &GatewayState,
+    project_path: &str,
+    event: LuxEvent,
+    session_id: &str,
+    summary: &str,
+) {
+    let payload = lux_progress_event_payload(&event);
+    let envelope = EventEnvelope {
+        schema_version: PROTOCOL_VERSION,
+        event_id: Uuid::new_v4().to_string(),
+        category: crate::protocol::EventCategory::Tool,
+        source: crate::protocol::EventSource::Ai,
+        session_id: session_id.to_string(),
+        captured_at_utc: chrono_like_now(),
+        project_path: Some(cross_platform::display_path(Path::new(project_path))),
+        summary: Some(summary.to_string()),
+        redaction_metadata: None,
+        retention_metadata: None,
+        payload,
+    };
+    publish_event(state, envelope).await;
+}
+
+async fn publish_kanban_progress_event(
+    state: &GatewayState,
+    project_path: &str,
+    changed_ticket_id: Option<String>,
+) -> Result<(), Response> {
+    let tickets = FileTicketStore::new(project_path)
+        .list(TicketFilter::default())
+        .map_err(internal_error)?;
+    publish_lux_progress_event(
+        state,
+        project_path,
+        kanban_progress_event(&tickets, changed_ticket_id),
+        "lux-kanban",
+        "Lux kanban progress updated",
+    )
+    .await;
+    Ok(())
+}
+
+fn lux_progress_event_payload(event: &LuxEvent) -> Value {
+    match event {
+        LuxEvent::SpecProgress {
+            overall_ambiguity,
+            domain_ambiguities,
+            domains_defined,
+            domains_total,
+            requirements_by_status,
+        } => json!({
+            "type": event.event_type(),
+            "overallAmbiguity": overall_ambiguity,
+            "overall_ambiguity": overall_ambiguity,
+            "domainAmbiguities": domain_ambiguities,
+            "domain_ambiguities": domain_ambiguities,
+            "domainsDefined": domains_defined,
+            "domains_defined": domains_defined,
+            "domainsTotal": domains_total,
+            "domains_total": domains_total,
+            "requirementsByStatus": requirements_by_status,
+            "requirements_by_status": requirements_by_status,
+        }),
+        LuxEvent::KanbanProgress {
+            by_status,
+            total,
+            active_count,
+            changed_ticket_id,
+        } => json!({
+            "type": event.event_type(),
+            "byStatus": by_status,
+            "by_status": by_status,
+            "total": total,
+            "activeCount": active_count,
+            "active_count": active_count,
+            "changedTicketId": changed_ticket_id,
+            "changed_ticket_id": changed_ticket_id,
+        }),
+        other => json!({ "type": other.event_type() }),
+    }
+}
+
+fn spec_progress_event(spec: &SpecProject) -> LuxEvent {
+    let domains = spec_domain_refs(spec);
+    LuxEvent::SpecProgress {
+        overall_ambiguity: spec.overall_ambiguity,
+        domain_ambiguities: domain_ambiguities(&domains),
+        domains_defined: domains.iter().filter(|domain| domain.defined).count() as u32,
+        domains_total: domains.len() as u32,
+        requirements_by_status: requirements_by_status(&domains),
+    }
+}
+
+fn kanban_progress_event(tickets: &[Ticket], changed_ticket_id: Option<String>) -> LuxEvent {
+    let summary = kanban_progress_summary(tickets);
+    LuxEvent::KanbanProgress {
+        by_status: summary.by_status,
+        total: summary.total,
+        active_count: summary.active_count,
+        changed_ticket_id,
+    }
+}
+
+fn spec_progress_summary(spec: &SpecProject) -> SpecProgressSummary {
+    let domains = spec_domain_refs(spec)
+        .into_iter()
+        .map(|domain| {
+            let requirements_total = domain.requirements.len() as u32;
+            let requirements_done = domain
+                .requirements
+                .iter()
+                .filter(|requirement| {
+                    matches!(
+                        requirement.status,
+                        lux_spec::RequirementStatus::Implemented
+                            | lux_spec::RequirementStatus::Verified
+                    )
+                })
+                .count() as u32;
+            (
+                domain.name.clone(),
+                DomainProgressSummary {
+                    ambiguity: domain.ambiguity_score,
+                    status: format!("{:?}", domain.status),
+                    requirements_total,
+                    requirements_done,
+                },
+            )
+        })
+        .collect();
+    SpecProgressSummary {
+        overall_ambiguity: spec.overall_ambiguity,
+        domains,
+    }
+}
+
+fn kanban_progress_summary(tickets: &[Ticket]) -> KanbanProgressSummary {
+    let mut by_status = HashMap::new();
+    for status in [
+        TicketStatus::Backlog,
+        TicketStatus::Blocked,
+        TicketStatus::ToDo,
+        TicketStatus::InProgress,
+        TicketStatus::Done,
+    ] {
+        by_status.insert(ticket_status_label(&status).to_string(), 0);
+    }
+    for ticket in tickets {
+        *by_status
+            .entry(ticket_status_label(&ticket.status).to_string())
+            .or_insert(0) += 1;
+    }
+    KanbanProgressSummary {
+        by_status,
+        total: tickets.len() as u32,
+        active_count: tickets
+            .iter()
+            .filter(|ticket| {
+                matches!(
+                    ticket.status,
+                    TicketStatus::Blocked | TicketStatus::ToDo | TicketStatus::InProgress
+                )
+            })
+            .count() as u32,
+    }
+}
+
+fn default_progress_summary() -> ProgressSummaryResponse {
+    ProgressSummaryResponse {
+        spec: SpecProgressSummary {
+            overall_ambiguity: 1.0,
+            domains: HashMap::new(),
+        },
+        kanban: kanban_progress_summary(&[]),
+        loop_summary: LoopProgressSummary {
+            state: "Idle".to_string(),
+            iteration: None,
+        },
+    }
+}
+
+fn loop_progress_summary(loop_snapshot: Option<LoopSnapshot>) -> LoopProgressSummary {
+    LoopProgressSummary {
+        state: loop_snapshot
+            .as_ref()
+            .map(|snapshot| lux_loop::state_label(&snapshot.state).to_string())
+            .unwrap_or_else(|| "Idle".to_string()),
+        iteration: loop_snapshot.map(|snapshot| snapshot.iteration),
+    }
+}
+
+fn spec_domain_refs(spec: &SpecProject) -> Vec<&lux_spec::DomainSpec> {
+    let mut domains = [
+        spec.domains.design.as_ref(),
+        spec.domains.architecture.as_ref(),
+        spec.domains.art_style.as_ref(),
+        spec.domains.audio.as_ref(),
+        spec.domains.narrative.as_ref(),
+        spec.domains.levels.as_ref(),
+        spec.domains.ui_ux.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    domains.extend(spec.domains.custom.values());
+    domains
+}
+
+fn domain_ambiguities(domains: &[&lux_spec::DomainSpec]) -> HashMap<String, f64> {
+    domains
+        .iter()
+        .map(|domain| (domain.name.clone(), domain.ambiguity_score))
+        .collect()
+}
+
+fn requirements_by_status(domains: &[&lux_spec::DomainSpec]) -> HashMap<String, u32> {
+    let mut counts = HashMap::new();
+    for domain in domains {
+        for requirement in &domain.requirements {
+            *counts
+                .entry(format!("{:?}", requirement.status))
+                .or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+fn ticket_status_label(status: &TicketStatus) -> &'static str {
+    match status {
+        TicketStatus::Backlog => "Backlog",
+        TicketStatus::Blocked => "Blocked",
+        TicketStatus::ToDo => "ToDo",
+        TicketStatus::InProgress => "InProgress",
+        TicketStatus::Done => "Done",
+    }
 }
 
 fn collect_domain_ambiguity(
@@ -2139,6 +2631,7 @@ async fn list_remote_sessions(
     headers: HeaderMap,
 ) -> Result<Json<Vec<RemoteSession>>, Response> {
     require_token(&state, &headers)?;
+    ensure_remote_webrtc_experimental(&state)?;
     let mut sessions: Vec<_> = state
         .remote_sessions
         .lock()
@@ -2156,6 +2649,7 @@ async fn create_remote_session(
     Json(request): Json<CreateRemoteSessionRequest>,
 ) -> Result<(StatusCode, Json<RemoteSession>), Response> {
     require_token(&state, &headers)?;
+    ensure_remote_webrtc_experimental(&state)?;
 
     let now = chrono_like_now();
     let session = RemoteSession {
@@ -2184,6 +2678,7 @@ async fn get_remote_session(
     AxumPath(session_id): AxumPath<String>,
 ) -> Result<Json<RemoteSession>, Response> {
     require_token(&state, &headers)?;
+    ensure_remote_webrtc_experimental(&state)?;
     state
         .remote_sessions
         .lock()
@@ -2200,6 +2695,7 @@ async fn delete_remote_session(
     AxumPath(session_id): AxumPath<String>,
 ) -> Result<StatusCode, Response> {
     require_token(&state, &headers)?;
+    ensure_remote_webrtc_experimental(&state)?;
     if state
         .remote_sessions
         .lock()
@@ -2235,6 +2731,7 @@ async fn get_webrtc_config(
     AxumPath(session_id): AxumPath<String>,
 ) -> Result<Json<WebRtcConfig>, Response> {
     require_token(&state, &headers)?;
+    ensure_remote_webrtc_experimental(&state)?;
     let session = state
         .remote_sessions
         .lock()
@@ -2267,9 +2764,9 @@ async fn list_available_tools() -> Json<serde_json::Value> {
         {
             "type": "opencode",
             "displayName": "OpenCode",
-            "description": "OpenCode AI coding agent with MCP and skill support.",
-            "integrationMethod": "mcp",
-            "capabilities": ["code-generation", "code-analysis", "skill-dispatch", "mcp-tools"],
+            "description": "OpenCode AI coding agent with skill support.",
+            "integrationMethod": "http",
+            "capabilities": ["code-generation", "code-analysis", "skill-dispatch"],
             "status": "available"
         }
     ]))
@@ -2849,6 +3346,10 @@ async fn signaling_socket(
             .into_response();
     }
 
+    if let Err(response) = ensure_remote_webrtc_experimental(&state) {
+        return response;
+    }
+
     if !state.remote_sessions.lock().await.contains_key(&session_id) {
         return not_found();
     }
@@ -3110,6 +3611,24 @@ async fn handle_socket(state: GatewayState, socket: WebSocket, role: String, cli
 
 fn default_stun_urls() -> Vec<String> {
     vec!["stun:stun.l.google.com:19302".to_string()]
+}
+
+fn ensure_remote_webrtc_experimental(state: &GatewayState) -> Result<(), Response> {
+    if state.remote_webrtc_experimental_enabled() {
+        Ok(())
+    } else {
+        Err(remote_webrtc_experimental_disabled())
+    }
+}
+
+fn remote_webrtc_experimental_disabled() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        format!(
+            "remote/WebRTC is hidden experimental; enable .lux/roadmap.json experimental_flags.{REMOTE_WEBRTC_EXPERIMENTAL_FLAG}=true to opt in"
+        ),
+    )
+        .into_response()
 }
 
 fn webrtc_config_for(session: &RemoteSession) -> WebRtcConfig {
@@ -3417,10 +3936,10 @@ async fn get_skill_adaptation(
             .join("..")
             .join("Skills")
             .join(&skill_name);
-        let project_dir = project_root.join(".lux/skills").join(&skill_name);
+        let project_dir = project_root.join(".agents/skills").join(&skill_name);
         let global_dir = std::env::var("HOME")
             .ok()
-            .map(|h| PathBuf::from(h).join(".lux/skills").join(&skill_name));
+            .map(|h| PathBuf::from(h).join(".agents/skills").join(&skill_name));
 
         if core_dir.join("manifest.json").is_file() {
             Some(core_dir)
@@ -3509,6 +4028,30 @@ mod tests {
         }))
     }
 
+    fn test_state_with_project(project_root: PathBuf) -> GatewayState {
+        GatewayState::new(GatewayConfig {
+            token: "secret".to_string(),
+            history_capacity: 8,
+            project_root: Some(project_root),
+            addon_auth: crate::addon_auth::AddonAuthConfig {
+                github_client_id: "test".to_string(),
+                github_client_secret: None,
+            },
+        })
+    }
+
+    fn test_app_with_remote_webrtc_enabled() -> Router {
+        let project_root = temp_project_root("remote-webrtc-enabled");
+        write_remote_webrtc_roadmap(&project_root, true);
+        test_app_with_project(project_root)
+    }
+
+    fn test_state_with_remote_webrtc_enabled() -> GatewayState {
+        let project_root = temp_project_root("remote-webrtc-state-enabled");
+        write_remote_webrtc_roadmap(&project_root, true);
+        test_state_with_project(project_root)
+    }
+
     fn temp_project_root(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -3521,6 +4064,14 @@ mod tests {
 
     fn write_ai_log(project_root: &Path, contents: &str) {
         fs::write(ai_log::resolve_log_path(project_root), contents).unwrap();
+    }
+
+    fn write_remote_webrtc_roadmap(project_root: &Path, enabled: bool) {
+        let mut roadmap = lux_roadmap::RoadmapReality::default();
+        roadmap
+            .experimental_flags
+            .insert(REMOTE_WEBRTC_EXPERIMENTAL_FLAG.to_string(), enabled);
+        roadmap.save(project_root).unwrap();
     }
 
     async fn json_request(
@@ -4090,11 +4641,11 @@ mod tests {
         assert_eq!(tools[0]["displayName"], "Claude Code");
         assert_eq!(tools[1]["type"], "openai-codex");
         assert_eq!(tools[2]["type"], "opencode");
-        assert_eq!(tools[2]["integrationMethod"], "mcp");
+        assert_eq!(tools[2]["integrationMethod"], "http");
         assert!(tools[2]["capabilities"]
             .as_array()
             .unwrap()
-            .contains(&serde_json::json!("mcp-tools")));
+            .contains(&serde_json::json!("skill-dispatch")));
     }
 
     #[tokio::test]
@@ -4309,7 +4860,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_session_crud_lifecycle() {
-        let app = test_app();
+        let app = test_app_with_remote_webrtc_enabled();
 
         let created = json_request(
             app.clone(),
@@ -4343,15 +4894,7 @@ mod tests {
 
     #[tokio::test]
     async fn signaling_relay_between_two_peers() {
-        let state = GatewayState::new(GatewayConfig {
-            token: "secret".to_string(),
-            history_capacity: 8,
-            project_root: None,
-            addon_auth: crate::addon_auth::AddonAuthConfig {
-                github_client_id: "test".to_string(),
-                github_client_secret: None,
-            },
-        });
+        let state = test_state_with_remote_webrtc_enabled();
         state
             .remote_sessions
             .lock()
@@ -4385,15 +4928,7 @@ mod tests {
 
     #[tokio::test]
     async fn signaling_queues_until_second_peer_connects() {
-        let state = GatewayState::new(GatewayConfig {
-            token: "secret".to_string(),
-            history_capacity: 8,
-            project_root: None,
-            addon_auth: crate::addon_auth::AddonAuthConfig {
-                github_client_id: "test".to_string(),
-                github_client_secret: None,
-            },
-        });
+        let state = test_state_with_remote_webrtc_enabled();
         state
             .remote_sessions
             .lock()
@@ -4427,7 +4962,7 @@ mod tests {
 
     #[tokio::test]
     async fn webrtc_config_returns_stun_servers() {
-        let app = test_app();
+        let app = test_app_with_remote_webrtc_enabled();
         let created = json_request(
             app.clone(),
             Method::POST,
@@ -4449,6 +4984,30 @@ mod tests {
             config_json["iceServers"][0]["urls"][0],
             "stun:example.test:19302"
         );
+    }
+
+    #[tokio::test]
+    async fn remote_webrtc_endpoints_hidden_experimental_by_default() {
+        let app = test_app();
+
+        let listed = authenticated_get(app.clone(), "/api/remote/sessions").await;
+        assert_eq!(listed.status(), StatusCode::FORBIDDEN);
+
+        let created = json_request(
+            app.clone(),
+            Method::POST,
+            "/api/remote/sessions",
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::FORBIDDEN);
+
+        let config = authenticated_get(app.clone(), "/api/remote/sessions/missing/config").await;
+        assert_eq!(config.status(), StatusCode::FORBIDDEN);
+
+        let flags = unauthenticated_get(app, "/api/lux/experimental-flags").await;
+        assert_eq!(flags.status(), StatusCode::OK);
+        assert_eq!(response_json(flags).await["remoteWebrtc"], false);
     }
 
     #[tokio::test]
@@ -4615,15 +5174,7 @@ mod tests {
 
     #[tokio::test]
     async fn signaling_guarded_remove_skips_mismatched_peer_id() {
-        let state = GatewayState::new(GatewayConfig {
-            token: "secret".to_string(),
-            history_capacity: 8,
-            project_root: None,
-            addon_auth: crate::addon_auth::AddonAuthConfig {
-                github_client_id: "test".to_string(),
-                github_client_secret: None,
-            },
-        });
+        let state = test_state_with_remote_webrtc_enabled();
         state
             .remote_sessions
             .lock()
@@ -4635,7 +5186,7 @@ mod tests {
 
         let (address, handle) = start_test_server(state.clone()).await;
 
-        let actual_peer_id = tokio::task::spawn_blocking(move || {
+        let _stream = tokio::task::spawn_blocking(move || {
             let mut _unity = websocket_connect(
                 address,
                 "/remote/signaling/session-1?role=unity&token=secret",
