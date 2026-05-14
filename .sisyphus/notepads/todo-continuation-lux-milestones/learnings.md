@@ -66,3 +66,12 @@
 - Pushed phases now require non-empty `pushed_at`, `push_git_sha`, and `push_evidence_path`; errors name the missing field.
 - `RoadmapReality::save()` now writes `.lux/roadmap.json` through `*.json.tmp` plus `fs::rename` after validation, keeping `.lux/roadmap.json` as SSoT and README as projection only.
 - Targeted roadmap tests pass with `cargo test --test lux_roadmap_test lux_roadmap`; broad `cargo test lux_roadmap` is blocked by pre-existing `lux_run_state_test` compile drift.
+
+## [Task 6] Completed team-mode producer-only enforcement
+- Added `TaskStatus::AwaitingEvidence` variant to `lux_task_dag.rs`; not counted as Done for dependency resolution.
+- `execute_task` in `lux_run.rs` now sets `AwaitingEvidence` instead of `Done` — dispatch no longer marks nodes complete.
+- Added 4 producer endpoints in `lux_api.rs`: `post_proposal`, `post_evidence`, `post_blocker_resolution_request`, `post_milestone_push_request`; all write to `.lux/runs/<id>/<subdir>/` only.
+- Added `accept_evidence` endpoint — sole path to transition `AwaitingEvidence → Done`; requires operator invocation.
+- Tests in `gateway/tests/lux_run_test.rs` rewritten to use real `LuxLockGuard` via `acquire_lux_lock(..., force: true)`; `TeamSizePreset::Solo` does not exist — use `Small`.
+- `cargo build` clean; `cargo test --test lux_run_test` 3 passed, 0 failed.
+- Evidence files written to `.sisyphus/evidence/task-6-*.txt`.
