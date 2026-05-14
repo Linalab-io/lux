@@ -75,3 +75,11 @@
 - Tests in `gateway/tests/lux_run_test.rs` rewritten to use real `LuxLockGuard` via `acquire_lux_lock(..., force: true)`; `TeamSizePreset::Solo` does not exist — use `Small`.
 - `cargo build` clean; `cargo test --test lux_run_test` 3 passed, 0 failed.
 - Evidence files written to `.sisyphus/evidence/task-6-*.txt`.
+
+## [Task 5] Completed
+- `required_tier_for_action("milestone_push")` now requires `VerificationTier::T3Gate`; general `push` remains T2.
+- T3 gate now requires all T2 checks to pass before invoking Unity batchmode compile and scene smoke.
+- Unity compile uses explicit `T3_COMPILE_TIMEOUT_SECS = 600`; scene smoke uses `T3_SCENE_SMOKE_TIMEOUT_SECS = 300`.
+- Unity executable discovery treats empty or missing executable paths as a hard failure with `Unity executable unavailable; milestone push blocked`.
+- Scene smoke fails on exit failure, timeout, or any case-insensitive `error` in stderr/log; logs and stdout/stderr evidence are recorded under `.lux/verification/t3/<domain>/`.
+- Targeted verification passed: `cargo test --test lux_verification_test`; build passed: `cargo build`.
