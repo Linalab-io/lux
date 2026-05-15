@@ -13,6 +13,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::lux_io::write_evidence_file;
 use crate::lux_ticket::Ticket;
 use crate::protocol::{EventCategory, EventEnvelope, EventSource, PROTOCOL_VERSION};
 
@@ -166,7 +167,13 @@ impl Executor for OpenCodeExecutor {
             )
         })?;
 
-        fs::write(&evidence.prompt_abs, Self::build_prompt(ticket, opts)).with_context(|| {
+        write_evidence_file(
+            &opts.working_dir,
+            &evidence.prompt_ref,
+            &Self::build_prompt(ticket, opts),
+            usize::MAX,
+        )
+        .with_context(|| {
             format!(
                 "failed to write executor prompt {}",
                 evidence.prompt_abs.display()

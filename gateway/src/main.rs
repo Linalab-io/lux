@@ -162,11 +162,21 @@ enum AutonomousCommand {
     /// Show current autonomous run state
     Status(LuxProjectArgs),
     /// Preview dispatch eligibility without mutating state
-    DryRun(LuxProjectArgs),
+    DryRun(AutonomousDryRunArgs),
     /// Trigger dispatch (requires DispatchReady state)
     Dispatch(AutonomousDispatchArgs),
     /// Show execution evidence for a run
     Evidence(AutonomousEvidenceArgs),
+}
+
+#[derive(Parser, Debug)]
+struct AutonomousDryRunArgs {
+    /// Unity project root containing the .lux directory
+    #[arg(long)]
+    project_path: Option<PathBuf>,
+    /// Filter dry-run to a specific ticket ID
+    #[arg(long)]
+    ticket: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -177,6 +187,9 @@ struct AutonomousDispatchArgs {
     /// Expected seq value for optimistic concurrency check
     #[arg(long)]
     seq: u64,
+    /// Target a specific ticket ID for dispatch
+    #[arg(long)]
+    ticket: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -185,7 +198,7 @@ struct AutonomousEvidenceArgs {
     #[arg(long)]
     project_path: Option<PathBuf>,
     /// Run ID to show evidence for (defaults to current run)
-    #[arg(long)]
+    #[arg(long, visible_alias = "run")]
     run_id: Option<String>,
 }
 
@@ -2088,8 +2101,8 @@ fn run_autonomous_command(args: AutonomousArgs) -> anyhow::Result<()> {
             println!("updated_at: {}", state.updated_at);
             Ok(())
         }
-        AutonomousCommand::DryRun(project_args) => {
-            let project_root = resolve_lux_project_root(&project_args.project_path)?;
+        AutonomousCommand::DryRun(dry_run_args) => {
+            let project_root = resolve_lux_project_root(&dry_run_args.project_path)?;
             let state = match lux_run_state::RunState::load(&project_root) {
                 Ok(s) => s,
                 Err(_) => lux_run_state::RunState::idle(&project_root)?,
@@ -2100,6 +2113,12 @@ fn run_autonomous_command(args: AutonomousArgs) -> anyhow::Result<()> {
             let dispatchable: Vec<_> = tickets
                 .iter()
                 .filter(|t| lux_ticket::is_execution_grade(t))
+                .filter(|t| {
+                    dry_run_args
+                        .ticket
+                        .as_deref()
+                        .map_or(true, |id| t.id == id)
+                })
                 .collect();
             println!("dry-run: seq={} status={}", state.seq, state.status);
             println!("dispatchable tickets: {}", dispatchable.len());
@@ -6089,7 +6108,27 @@ fn resolve_project_root(project_path: &Option<PathBuf>) -> anyhow::Result<PathBu
 fn resolve_lux_project_root(project_path: &Option<PathBuf>) -> anyhow::Result<PathBuf> {
     match project_path {
         Some(path) => Ok(cross_platform::normalize_path_buf(path.clone())),
-        None => Ok(cross_platform::normalize_path_buf(std::env::current_dir()?)),
+        None => {
+            let cwd = cross_platform::normalize_path_buf(std::env::current_dir()?);
+            find_lux_root_from(&cwd).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No .lux/ directory found in {} or any parent directory. Use --project-path.",
+                    cwd.display()
+                )
+            })
+        }
+    }
+}
+
+fn find_lux_root_from(start: &Path) -> Option<PathBuf> {
+    let mut current = start.to_path_buf();
+    loop {
+        if current.join(".lux").is_dir() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
     }
 }
 
