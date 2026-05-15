@@ -44,11 +44,11 @@
     },
     {
       "name": "M6: Autonomous — Spec-to-Ticket-to-Execution Pipeline",
-      "status": "planned",
-      "evidence_path": null,
-      "pushed_at": null,
+      "status": "pushed",
+      "evidence_path": ".sisyphus/evidence/task-10-t3-unity-gate.txt",
+      "pushed_at": "2026-05-15T12:38:31Z",
       "push_git_sha": null,
-      "push_evidence_path": null
+      "push_evidence_path": ".sisyphus/evidence/task-10-t3-unity-gate.txt"
     }
   ],
   "capabilities": [
