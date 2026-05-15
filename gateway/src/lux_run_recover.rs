@@ -22,6 +22,140 @@ use crate::{
     lux_worktree::{Worktree, WorktreeStatus},
 };
 
+/// Durable record of an active ticket execution.
+/// Written to `.lux/runs/<run_id>/session.json` before the executor spawns.
+/// Updated on each heartbeat tick. Used by `recover_stuck_executions` on restart.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionSession {
+    pub run_id: String,
+    pub ticket_id: String,
+    pub started_at: String,
+    pub last_heartbeat_at: String,
+    pub timeout_secs: u64,
+    pub max_attempts: u32,
+}
+
+impl ExecutionSession {
+    pub fn path(project_path: &Path, run_id: &str) -> PathBuf {
+        project_path
+            .join(".lux")
+            .join("runs")
+            .join(run_id)
+            .join("session.json")
+    }
+
+    pub fn begin(
+        project_path: &Path,
+        run_id: &str,
+        ticket_id: &str,
+        timeout_secs: u64,
+        max_attempts: u32,
+    ) -> Result<Self> {
+        let now = Utc::now().to_rfc3339();
+        let session = Self {
+            run_id: run_id.to_string(),
+            ticket_id: ticket_id.to_string(),
+            started_at: now.clone(),
+            last_heartbeat_at: now,
+            timeout_secs,
+            max_attempts,
+        };
+        atomic_write_json(&Self::path(project_path, run_id), &session)?;
+        Ok(session)
+    }
+
+    pub fn heartbeat(&mut self, project_path: &Path) -> Result<()> {
+        self.last_heartbeat_at = Utc::now().to_rfc3339();
+        atomic_write_json(&Self::path(project_path, &self.run_id), self)
+    }
+
+    pub fn load(project_path: &Path, run_id: &str) -> Result<Option<Self>> {
+        let path = Self::path(project_path, run_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read session file {}", path.display()))?;
+        let session: Self = serde_json::from_str(&content)
+            .with_context(|| format!("failed to parse session file {}", path.display()))?;
+        Ok(Some(session))
+    }
+}
+
+/// Scan all run directories for sessions whose heartbeat has exceeded `timeout_secs`.
+/// For each stuck session, transitions the run-state to `RetryReady` (if currently
+/// `ExecutingTicket`) using `transition_with_seq_check` so stale-seq conflicts are
+/// surfaced rather than silently overwritten.
+///
+/// Returns the list of run IDs that were recovered.
+pub fn recover_stuck_executions(project_path: &Path) -> Result<Vec<String>> {
+    let runs_dir = project_path.join(".lux").join("runs");
+    if !runs_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut recovered = Vec::new();
+    for entry in fs::read_dir(&runs_dir)
+        .with_context(|| format!("failed to read runs dir {}", runs_dir.display()))?
+    {
+        let entry = entry?;
+        let run_id = entry.file_name().to_string_lossy().to_string();
+        let session = match ExecutionSession::load(project_path, &run_id)? {
+            Some(s) => s,
+            None => continue,
+        };
+
+        let last_beat = DateTime::parse_from_rfc3339(&session.last_heartbeat_at)
+            .with_context(|| {
+                format!(
+                    "session {} has invalid last_heartbeat_at: {}",
+                    run_id, session.last_heartbeat_at
+                )
+            })?
+            .with_timezone(&Utc);
+
+        let elapsed = Utc::now()
+            .signed_duration_since(last_beat)
+            .num_seconds()
+            .max(0) as u64;
+
+        if elapsed < session.timeout_secs {
+            continue;
+        }
+
+        let state = match RunState::load(project_path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        if state.status != RunStatus::ExecutingTicket.to_string() {
+            continue;
+        }
+
+        match RunState::transition_with_seq_check(
+            project_path,
+            state.seq,
+            RunStatus::RetryReady,
+            "recover_stuck_executions: heartbeat timeout",
+            |s| {
+                s.last_error = Some(format!(
+                    "execution timed out after {}s (ticket: {})",
+                    session.timeout_secs, session.ticket_id
+                ));
+            },
+        ) {
+            Ok(_) => recovered.push(run_id),
+            Err(e) => {
+                eprintln!(
+                    "[lux] recover_stuck_executions: seq conflict for run {run_id}, skipping: {e:#}"
+                );
+            }
+        }
+    }
+    Ok(recovered)
+}
+
 pub fn recover_pending_transactions(project_path: &Path) -> Result<Vec<PathBuf>> {
     let runs_dir = project_path.join(".lux").join("runs");
     if !runs_dir.exists() {

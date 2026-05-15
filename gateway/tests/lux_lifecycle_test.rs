@@ -10,7 +10,7 @@ use lux::{
         begin_milestone_push_approval, execute_milestone_push_with_runner, MilestonePushApproval,
         TransactionJournal, TransactionOperation, TransactionStatus, MILESTONE_PUSH_TRANSITION,
     },
-    lux_run_recover::recover_pending_transactions,
+    lux_run_recover::{recover_pending_transactions, recover_stuck_executions, ExecutionSession},
     lux_run_state::{ApprovalGateType, RunState, RunStatus},
     lux_task_dag::{TaskDAG, TaskNode, TaskStatus},
     lux_ticket::{
@@ -113,6 +113,9 @@ fn verification_failure_creates_blocker_and_blocks_push_without_evidence() {
     seed_ticket(temp.path(), "ticket-active");
 
     let result = VerificationResult {
+        status: lux::lux_verification::VerificationStatus::Failed,
+        policy_used: "cached".to_string(),
+        evidence_paths: Vec::new(),
         passed: false,
         timestamp: Utc::now().to_rfc3339(),
         checks: vec![CheckResult {
@@ -472,4 +475,83 @@ fn executor_opts(project_path: &Path, run_id: &str, ticket_id: &str) -> Executor
         working_dir: project_path.to_path_buf(),
         timeout_secs: 1,
     }
+}
+
+#[test]
+fn execution_session_written_before_executor_runs() {
+    let temp = TestTempDir::new("session-written");
+    let run_id = "run-session-written";
+    let ticket_id = "ticket-session-written";
+
+    let session = ExecutionSession::begin(temp.path(), run_id, ticket_id, 300, 3)
+        .expect("session should be created");
+
+    let session_path = ExecutionSession::path(temp.path(), run_id);
+    assert!(session_path.exists(), "session.json must exist on disk");
+
+    let loaded = ExecutionSession::load(temp.path(), run_id)
+        .expect("load should succeed")
+        .expect("session should be present");
+
+    assert_eq!(loaded.run_id, run_id);
+    assert_eq!(loaded.ticket_id, ticket_id);
+    assert_eq!(loaded.timeout_secs, 300);
+    assert_eq!(loaded.max_attempts, 3);
+    assert_eq!(loaded.started_at, session.started_at);
+    assert_eq!(loaded.last_heartbeat_at, session.last_heartbeat_at);
+}
+
+#[test]
+fn execution_recovery_marks_retry_ready_on_timeout() {
+    let temp = TestTempDir::new("recovery-timeout");
+    let run_id = "run-recovery-timeout";
+
+    let mut state = run_state(temp.path(), run_id);
+    state
+        .transition_to(RunStatus::ExecutingTicket, "test dispatch")
+        .expect("transition to ExecutingTicket");
+    state.save(temp.path()).expect("state should save");
+
+    let stale_time = (Utc::now() - chrono::Duration::seconds(400)).to_rfc3339();
+    let session = ExecutionSession {
+        run_id: run_id.to_string(),
+        ticket_id: "ticket-timeout".to_string(),
+        started_at: stale_time.clone(),
+        last_heartbeat_at: stale_time,
+        timeout_secs: 300,
+        max_attempts: 3,
+    };
+    lux::lux_io::atomic_write_json(
+        &ExecutionSession::path(temp.path(), run_id),
+        &session,
+    )
+    .expect("session should be written");
+
+    let recovered = recover_stuck_executions(temp.path()).expect("recovery should succeed");
+    assert_eq!(recovered, vec![run_id.to_string()]);
+
+    let state_after = RunState::load(temp.path()).expect("state should load");
+    assert_eq!(state_after.status, RunStatus::RetryReady.to_string());
+    assert!(state_after.last_error.as_deref().unwrap_or("").contains("timed out"));
+}
+
+#[test]
+fn execution_recovery_skips_live_session() {
+    let temp = TestTempDir::new("recovery-live");
+    let run_id = "run-recovery-live";
+
+    let mut state = run_state(temp.path(), run_id);
+    state
+        .transition_to(RunStatus::ExecutingTicket, "test dispatch")
+        .expect("transition to ExecutingTicket");
+    state.save(temp.path()).expect("state should save");
+
+    ExecutionSession::begin(temp.path(), run_id, "ticket-live", 300, 3)
+        .expect("session should be created");
+
+    let recovered = recover_stuck_executions(temp.path()).expect("recovery should succeed");
+    assert!(recovered.is_empty(), "live session must not be recovered");
+
+    let state_after = RunState::load(temp.path()).expect("state should load");
+    assert_eq!(state_after.status, RunStatus::ExecutingTicket.to_string());
 }
