@@ -121,7 +121,11 @@ pub struct RunLifecycle {
 }
 
 impl TransactionJournal {
-    pub fn planned(run_id: &str, project_path: &Path, operations: Vec<TransactionOperation>) -> Result<Self> {
+    pub fn planned(
+        run_id: &str,
+        project_path: &Path,
+        operations: Vec<TransactionOperation>,
+    ) -> Result<Self> {
         let mut journal = Self {
             id: Uuid::new_v4().to_string(),
             created_at: Utc::now().to_rfc3339(),
@@ -172,8 +176,15 @@ impl TransactionJournal {
     fn capture_before_state(&mut self) -> Result<()> {
         for operation in &mut self.operations {
             match operation {
-                TransactionOperation::WriteFile { path, before_content, .. }
-                | TransactionOperation::DeleteFile { path, before_content } => {
+                TransactionOperation::WriteFile {
+                    path,
+                    before_content,
+                    ..
+                }
+                | TransactionOperation::DeleteFile {
+                    path,
+                    before_content,
+                } => {
                     *before_content = read_optional_file(path)?;
                 }
                 TransactionOperation::RenameFile {

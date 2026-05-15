@@ -291,11 +291,11 @@ fn built_in_domains(
     [
         ("design", spec.domains.design.as_ref()),
         ("architecture", spec.domains.architecture.as_ref()),
-        ("art-style", spec.domains.art_style.as_ref()),
+        ("art_style", spec.domains.art_style.as_ref()),
         ("audio", spec.domains.audio.as_ref()),
         ("narrative", spec.domains.narrative.as_ref()),
         ("levels", spec.domains.levels.as_ref()),
-        ("ui-ux", spec.domains.ui_ux.as_ref()),
+        ("ui_ux", spec.domains.ui_ux.as_ref()),
     ]
 }
 
@@ -472,18 +472,18 @@ fn calculate_schell_phase_scores(
     let mut scores = HashMap::new();
     scores.insert(
         "phase1_experience".to_string(),
-        average_domains(domain_scores, &["design", "art-style", "audio", "ui-ux"]),
+        average_domains(domain_scores, &["design", "art_style", "audio", "ui_ux"]),
     );
     scores.insert(
         "phase2_tetrad".to_string(),
         average_domains(
             domain_scores,
-            &["design", "narrative", "art-style", "architecture"],
+            &["design", "narrative", "art_style", "architecture"],
         ),
     );
     scores.insert(
         "phase3_core_loop".to_string(),
-        average_domains(domain_scores, &["design", "levels", "ui-ux"]),
+        average_domains(domain_scores, &["design", "levels", "ui_ux"]),
     );
     scores.insert(
         "phase4_motivation".to_string(),
@@ -493,7 +493,7 @@ fn calculate_schell_phase_scores(
         "phase5_assessment".to_string(),
         average_domains(
             domain_scores,
-            &["design", "architecture", "levels", "ui-ux"],
+            &["design", "architecture", "levels", "ui_ux"],
         ),
     );
     scores
@@ -555,7 +555,7 @@ fn expected_fields(name: &str) -> Vec<&'static str> {
             "win_condition",
         ],
         "architecture" => vec!["engine", "platform", "networking", "data_storage"],
-        "art-style" => vec![
+        "art_style" => vec![
             "visual_style",
             "color_palette",
             "resolution",
@@ -569,7 +569,7 @@ fn expected_fields(name: &str) -> Vec<&'static str> {
             "world_building",
         ],
         "levels" => vec!["level_count", "difficulty_curve", "level_generation"],
-        "ui-ux" => vec!["hud_layout", "menu_flow", "accessibility", "input_mapping"],
+        "ui_ux" => vec!["hud_layout", "menu_flow", "accessibility", "input_mapping"],
         _ => Vec::new(),
     }
 }
@@ -578,11 +578,11 @@ fn domain_keywords(name: &str) -> Vec<&'static str> {
     match name {
         "design" => vec!["genre", "mechanic", "loop", "player", "win"],
         "architecture" => vec!["engine", "platform", "network", "storage", "system"],
-        "art-style" => vec!["visual", "color", "resolution", "animation", "style"],
+        "art_style" => vec!["visual", "color", "resolution", "animation", "style"],
         "audio" => vec!["music", "sfx", "ambient", "dynamic", "sound"],
         "narrative" => vec!["story", "character", "dialogue", "world", "arc"],
         "levels" => vec!["level", "difficulty", "procedural", "handcrafted", "curve"],
-        "ui-ux" => vec!["hud", "menu", "accessibility", "input", "flow"],
+        "ui_ux" => vec!["hud", "menu", "accessibility", "input", "flow"],
         _ => Vec::new(),
     }
 }
@@ -707,7 +707,7 @@ fn fallback_questions(name: &str) -> Vec<&'static str> {
             "Which platforms must be supported?",
             "Does the game require networking or online services?",
         ],
-        "art-style" => vec![
+        "art_style" => vec![
             "What visual style should the game use?",
             "What color palette defines the mood?",
             "What animation style should characters and UI use?",
@@ -727,7 +727,7 @@ fn fallback_questions(name: &str) -> Vec<&'static str> {
             "How should difficulty progress over time?",
             "Are levels procedural, handcrafted, or hybrid?",
         ],
-        "ui-ux" => vec![
+        "ui_ux" => vec![
             "What information belongs on the HUD?",
             "What is the menu flow from launch to gameplay?",
             "Which accessibility requirements are mandatory?",
@@ -738,8 +738,8 @@ fn fallback_questions(name: &str) -> Vec<&'static str> {
 
 fn primary_schell_phase(name: &str) -> &'static str {
     match name {
-        "design" | "levels" | "ui-ux" => "phase3_core_loop",
-        "architecture" | "art-style" | "narrative" => "phase2_tetrad",
+        "design" | "levels" | "ui_ux" => "phase3_core_loop",
+        "architecture" | "art_style" | "narrative" => "phase2_tetrad",
         "audio" => "phase1_experience",
         _ => "phase5_assessment",
     }

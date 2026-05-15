@@ -12,7 +12,10 @@ use crate::{
     lux_bridge_lease::{expire_stale_leases, BridgeLease, LeaseStatus},
     lux_io::atomic_write_json,
     lux_metrics::RunMetrics,
-    lux_run::{AgentSession, RunConfig, RunLifecycle, TaskProjection, TransactionJournal, TransactionStatus},
+    lux_run::{
+        AgentSession, RunConfig, RunLifecycle, TaskProjection, TransactionJournal,
+        TransactionStatus,
+    },
     lux_run_state::{RunState, RunStatus},
     lux_task_dag::{TaskDAG, TaskStatus},
     lux_team_profile::TeamProfile,

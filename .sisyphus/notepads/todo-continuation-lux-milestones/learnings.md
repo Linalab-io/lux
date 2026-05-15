@@ -110,3 +110,12 @@
     - Documented canonical stop reasons (max_continuations_reached, spec_satisfied, manual_intervention, stagnation_detected).
     - Documented legacy state deprecation.
 - Verified that forbidden commands (ralph, start-work) and typos (max_continations) are not present in the updated documentation.
+
+## [Task 7] Completed spec→ticket→verification→milestone lifecycle
+- `RunStatus::AwaitingEvidence` now prevents `complete_run` from prematurely marking dispatch-only work complete; team-mode dispatch remains producer-only until evidence is accepted.
+- Milestone push approval is explicit: `begin_milestone_push_approval` requires existing T3 evidence and sets `AwaitingApproval`, `ApproveDiff`, `pending_transition=milestone_push`, and `awaiting_since` while incrementing `seq`.
+- Multi-file run-state + roadmap writes use `.lux/runs/<run_id>/transactions/<uuid>.json` journals with planned/committed/rolled_back status and operation pre-images for recovery.
+- Gateway startup runs pending transaction recovery from `GatewayState::new`; planned journals are reapplied idempotently or rolled back on apply failure.
+- Full lifecycle tests cover success, verification failure/blocker creation, and transaction recovery in `gateway/tests/lux_lifecycle_test.rs`.
+- Existing ambiguity domain keys were normalized to spec field names (`art_style`, `ui_ux`) after full-suite tests exposed stale hyphenated keys.
+- Verification passed: `cd gateway && cargo test`.
