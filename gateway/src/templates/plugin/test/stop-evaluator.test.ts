@@ -11,6 +11,7 @@ import {
   getStopReasonMessage,
   DEFAULT_STOP_CONFIG,
 } from "../stop-evaluator"
+import type { StopReason } from "../stop-evaluator"
 import type { LuxSessionState } from "../session-state"
 import type { StagnationDetails } from "../stagnation-detection"
 
@@ -251,6 +252,23 @@ describe("stop-evaluator", () => {
       }
 
       expect(getStopReasonMessage("health_critical", context)).toContain("healthScore 10")
+    })
+  })
+
+  describe("StopReason canonical values", () => {
+    it("includes max_iterations_reached as a valid StopReason", () => {
+      const reason: StopReason = "max_iterations_reached"
+      expect(reason).toBe("max_iterations_reached")
+    })
+
+    it("includes blocker_escalation_required as a valid StopReason", () => {
+      const reason: StopReason = "blocker_escalation_required"
+      expect(reason).toBe("blocker_escalation_required")
+    })
+
+    it("includes blocker_cycle_detected as a valid StopReason", () => {
+      const reason: StopReason = "blocker_cycle_detected"
+      expect(reason).toBe("blocker_cycle_detected")
     })
   })
 })

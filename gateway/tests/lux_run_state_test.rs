@@ -688,3 +688,40 @@ fn test_run_state_save_rollback_on_failed_post_write_validation() {
         "unexpected error: {load_err}"
     );
 }
+
+#[test]
+fn test_migration_rollback_preserves_legacy_on_failed_post_write_validation() {
+    let temp_dir = TestTempDir::new("migration-rollback-legacy");
+    let lux_dir = temp_dir.path().join(".lux");
+
+    write_legacy_state(
+        &temp_dir,
+        json!({
+            "current_ticket_id": "ticket-rollback",
+            "status": "UnknownLegacyStatus",
+            "inFlight": false
+        }),
+    );
+
+    let result = RunState::migrate_legacy_continuation_state(temp_dir.path());
+    assert!(
+        result.is_err(),
+        "migration with unknown legacy status should fail"
+    );
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("unknown legacy ContinuationStatus"),
+        "error should mention unknown legacy ContinuationStatus"
+    );
+
+    assert!(
+        lux_dir.join("continuation-state.json").exists(),
+        "legacy continuation-state.json must be preserved when migration fails"
+    );
+    assert!(
+        !lux_dir.join("continuation-state.json.deprecated").exists(),
+        "deprecated file must NOT exist when migration failed before rename"
+    );
+}

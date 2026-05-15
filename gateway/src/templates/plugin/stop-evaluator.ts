@@ -15,12 +15,15 @@ import type { LuxSessionState } from "./session-state"
  */
 export type StopReason =
   | "max_continuations_reached"
-  | "user_abort"
+  | "max_iterations_reached"
   | "stagnation_limit"
-  | "health_critical"
-  | "milestone_complete"
-  | "ambiguity_too_high"
   | "consecutive_failure_limit"
+  | "milestone_complete"
+  | "blocker_escalation_required"
+  | "blocker_cycle_detected"
+  | "user_abort"
+  | "health_critical"
+  | "ambiguity_too_high"
 
 export interface StopDecision {
   shouldStop: boolean
@@ -194,5 +197,11 @@ export function getStopReasonMessage(
       return `[stop-evaluator] ambiguity_too_high: ambiguity ${context.ambiguity} > ${config.ambiguityThreshold}, clarificationTicketInProgress=${context.clarificationTicketInProgress}`
     case "consecutive_failure_limit":
       return `[stop-evaluator] consecutive_failure_limit: continuationState.status=${context.continuationState.status}, consecutive_failures=${context.continuationState.consecutive_failures} >= ${config.consecutiveFailuresThreshold}`
+    case "max_iterations_reached":
+      return `[stop-evaluator] max_iterations_reached: continuationCount ${context.state.continuationCount}`
+    case "blocker_escalation_required":
+      return `[stop-evaluator] blocker_escalation_required`
+    case "blocker_cycle_detected":
+      return `[stop-evaluator] blocker_cycle_detected`
   }
 }
