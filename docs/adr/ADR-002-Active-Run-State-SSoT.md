@@ -16,11 +16,19 @@ Two+ files that must agree = eventual inconsistency. Pause on one layer doesn't 
 
 Rules:
 - Gateway is the ONLY writer (atomic write + schema version + monotonic seq)
+- Every persisted save increments `seq`; transitions that accept an expected seq MUST reject stale writers instead of overwriting newer state.
 - All in-memory state is a derived cache from this file
 - Plugin MUST NOT directly mutate this file or continuation-state.json for run state
 - Plugin results go through gateway API or inbox (.lux/runs/<run_id>/inbox/*)
 - Missing run-state.json after init = explicit error or initialization path; NO silent fallback
 - One active run only for MVP (no parallel multi-run until state model proven)
+
+M6 autonomous execution extends the active run lifecycle with these durable states:
+`planned`, `dispatch_ready`, `executing`, `verifying`, `blocked`, `retry_ready`,
+`resumed`, `Completed`, `Failed`, and `Quarantined`. The legacy M5 states remain
+valid for migration and existing gateway surfaces; M6 states add explicit dispatch,
+executor, verification, retry/resume, and quarantine checkpoints without introducing
+a second source of truth.
 
 Minimal MVP shape:
 ```json
@@ -31,12 +39,24 @@ Minimal MVP shape:
   "status": "idle",
   "goal_id": null,
   "milestone_id": null,
+  "ticket_id": null,
   "current_ticket_id": null,
   "approval": { "gate": null, "pending_transition": null, "created_at": null },
   "resume": { "previous_status": null, "checkpoint": null },
   "executor": { "kind": null, "job_id": null, "heartbeat_at": null },
+  "verification_policy": null,
   "last_error": null,
-  "updated_at": ""
+  "updated_at": "",
+  "planned_at": null,
+  "dispatch_ready_at": null,
+  "executing_at": null,
+  "verifying_at": null,
+  "blocked_at": null,
+  "retry_ready_at": null,
+  "resumed_at": null,
+  "completed_at": null,
+  "failed_at": null,
+  "quarantined_at": null
 }
 ```
 

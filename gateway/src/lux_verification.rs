@@ -466,7 +466,6 @@ fn quarantine_run_state(
 }
 
 fn touch_run_state(run_state: &mut RunState) {
-    run_state.seq += 1;
     run_state.updated_at = Utc::now().to_rfc3339();
 }
 

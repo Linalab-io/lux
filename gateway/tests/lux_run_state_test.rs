@@ -5,7 +5,7 @@ use std::{
 };
 
 use axum::{
-    body::{to_bytes, Body},
+    body::Body,
     http::{header, Method, Request, StatusCode},
 };
 use lux::{
@@ -75,6 +75,7 @@ fn test_run_state_save_load_roundtrip() {
     state.status = RunStatus::AwaitingApproval.to_string();
     state.goal_id = Some("goal-1".to_string());
     state.milestone_id = Some("milestone-2".to_string());
+    state.ticket_id = Some("ticket-3".to_string());
     state.current_ticket_id = Some("ticket-3".to_string());
     state.approval.gate = Some(ApprovalGateType::ApproveDiff.to_string());
     state.approval.pending_transition = Some(RunStatus::ExecutingTicket.to_string());
@@ -84,6 +85,7 @@ fn test_run_state_save_load_roundtrip() {
     state.executor.kind = Some("opencode".to_string());
     state.executor.job_id = Some("job-4".to_string());
     state.executor.heartbeat_at = Some("2026-05-14T00:00:01Z".to_string());
+    state.verification_policy = Some("cargo-test".to_string());
     state.last_error = Some("blocked by compiler".to_string());
     state.blocker_attempts.insert("blocker-1".to_string(), 2);
     state.consecutive_blocker_generations = 1;
@@ -106,12 +108,19 @@ fn test_run_state_transition_increments_seq() {
         .transition_to(RunStatus::Planning, "start planning")
         .expect("transition should succeed");
     assert_eq!(state.status, RunStatus::Planning.to_string());
+    assert_eq!(state.seq, 0);
+    state
+        .save(temp_dir.path())
+        .expect("save should increment seq");
     assert_eq!(state.seq, 1);
 
     state
         .transition_to(RunStatus::Verifying, "verify work")
         .expect("transition should succeed");
     assert_eq!(state.status, RunStatus::Verifying.to_string());
+    state
+        .save(temp_dir.path())
+        .expect("save should increment seq again");
     assert_eq!(state.seq, 2);
     assert!(state.updated_at >= initial_updated_at);
 }
@@ -427,25 +436,25 @@ fn test_canonical_stop_reasons_and_numeric_defaults() {
 #[test]
 fn test_update_with_seq_check_success() {
     let temp_dir = TestTempDir::new("seq-check-success");
-    let initial = RunState::idle(temp_dir.path()).expect("idle state should be created");
+    let mut initial = RunState::idle(temp_dir.path()).expect("idle state should be created");
     initial
         .save(temp_dir.path())
         .expect("initial save should succeed");
-    assert_eq!(initial.seq, 0);
+    assert_eq!(initial.seq, 1);
 
-    let updated = RunState::update_with_seq_check(temp_dir.path(), 0, None, |state| {
+    let updated = RunState::update_with_seq_check(temp_dir.path(), 1, None, |state| {
         state.status = "Planning".to_string();
     })
     .expect("update with correct seq should succeed");
 
-    assert_eq!(updated.seq, 1);
+    assert_eq!(updated.seq, 2);
     assert_eq!(updated.status, "Planning");
 }
 
 #[test]
 fn test_update_with_seq_check_stale_seq_returns_error() {
     let temp_dir = TestTempDir::new("seq-check-stale");
-    let initial = RunState::idle(temp_dir.path()).expect("idle state should be created");
+    let mut initial = RunState::idle(temp_dir.path()).expect("idle state should be created");
     initial
         .save(temp_dir.path())
         .expect("initial save should succeed");
@@ -462,17 +471,17 @@ fn test_update_with_seq_check_stale_seq_returns_error() {
 #[test]
 fn test_update_with_seq_check_concurrent_writes_second_fails() {
     let temp_dir = TestTempDir::new("seq-check-concurrent");
-    let initial = RunState::idle(temp_dir.path()).expect("idle state should be created");
+    let mut initial = RunState::idle(temp_dir.path()).expect("idle state should be created");
     initial
         .save(temp_dir.path())
         .expect("initial save should succeed");
 
-    RunState::update_with_seq_check(temp_dir.path(), 0, None, |state| {
+    RunState::update_with_seq_check(temp_dir.path(), 1, None, |state| {
         state.status = "Planning".to_string();
     })
     .expect("first write should succeed");
 
-    let err = RunState::update_with_seq_check(temp_dir.path(), 0, None, |state| {
+    let err = RunState::update_with_seq_check(temp_dir.path(), 1, None, |state| {
         state.status = "Interrupted".to_string();
     })
     .expect_err("second write with stale seq should fail");
@@ -483,8 +492,132 @@ fn test_update_with_seq_check_concurrent_writes_second_fails() {
     );
 
     let final_state = RunState::load(temp_dir.path()).expect("state should be loadable");
-    assert_eq!(final_state.seq, 1);
+    assert_eq!(final_state.seq, 2);
     assert_eq!(final_state.status, "Planning");
+}
+
+#[test]
+fn interrupted_run_resumes_deterministically() {
+    let temp_dir = TestTempDir::new("interrupted-run-resume");
+    let mut state = RunState::idle(temp_dir.path()).expect("idle state should be created");
+    state.run_id = uuid::Uuid::new_v4().to_string();
+    state.ticket_id = Some("ticket-resume".to_string());
+    state.executor.kind = Some("opencode".to_string());
+    state
+        .transition_to(RunStatus::Executing, "dispatch executor")
+        .expect("executing transition should succeed");
+    state
+        .save(temp_dir.path())
+        .expect("executing state should save");
+
+    let before_restart = RunState::load(temp_dir.path()).expect("state should load before restart");
+    let resumed = RunState::transition_with_seq_check(
+        temp_dir.path(),
+        before_restart.seq,
+        RunStatus::Resumed,
+        "simulated restart",
+        |_| {},
+    )
+    .expect("resume should succeed with current seq");
+
+    assert_eq!(resumed.run_id, before_restart.run_id);
+    assert_eq!(resumed.status, RunStatus::Resumed.to_string());
+    assert_eq!(resumed.seq, before_restart.seq + 1);
+    assert!(resumed.resumed_at.is_some());
+}
+
+#[test]
+fn missing_run_state_produces_explicit_error() {
+    let temp_dir = TestTempDir::new("missing-explicit");
+
+    let error = RunState::load(temp_dir.path()).expect_err("missing file should fail");
+
+    assert!(
+        error.to_string().contains("run-state.json not found"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn stale_seq_transition_rejected() {
+    let temp_dir = TestTempDir::new("stale-seq-transition");
+    let mut state = RunState::idle(temp_dir.path()).expect("idle state should be created");
+    state
+        .save(temp_dir.path())
+        .expect("initial save should succeed");
+
+    let error = RunState::transition_with_seq_check(
+        temp_dir.path(),
+        state.seq + 1,
+        RunStatus::Executing,
+        "wrong seq",
+        |_| {},
+    )
+    .expect_err("stale transition should fail");
+
+    assert!(
+        error.to_string().contains("stale seq"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn executing_to_verifying_transition() {
+    let temp_dir = TestTempDir::new("executing-verifying");
+    let mut state = RunState::idle(temp_dir.path()).expect("idle state should be created");
+    state
+        .transition_to(RunStatus::Executing, "executor started")
+        .expect("executing transition should succeed");
+    state
+        .save(temp_dir.path())
+        .expect("executing state should save");
+
+    let verified = RunState::transition_with_seq_check(
+        temp_dir.path(),
+        state.seq,
+        RunStatus::Verifying,
+        "verification started",
+        |run_state| {
+            run_state.verification_policy = Some("cargo-test".to_string());
+        },
+    )
+    .expect("verifying transition should succeed");
+
+    assert_eq!(verified.status, RunStatus::Verifying.to_string());
+    assert_eq!(verified.seq, state.seq + 1);
+    assert_eq!(verified.verification_policy, Some("cargo-test".to_string()));
+    assert!(verified.verifying_at.is_some());
+}
+
+#[test]
+fn verifying_to_blocked_transition() {
+    let temp_dir = TestTempDir::new("verifying-blocked");
+    let mut state = RunState::idle(temp_dir.path()).expect("idle state should be created");
+    state
+        .transition_to(RunStatus::Verifying, "verification started")
+        .expect("verifying transition should succeed");
+    state
+        .save(temp_dir.path())
+        .expect("verifying state should save");
+
+    let blocked = RunState::transition_with_seq_check(
+        temp_dir.path(),
+        state.seq,
+        RunStatus::Blocked,
+        "verification blocker",
+        |run_state| {
+            run_state.last_error = Some("compiler failure".to_string());
+            run_state.blocker_attempts.insert("compiler".to_string(), 1);
+            run_state.blocker_depth = 1;
+        },
+    )
+    .expect("blocked transition should succeed");
+
+    assert_eq!(blocked.status, RunStatus::Blocked.to_string());
+    assert_eq!(blocked.last_error, Some("compiler failure".to_string()));
+    assert_eq!(blocked.blocker_attempts.get("compiler"), Some(&1));
+    assert_eq!(blocked.blocker_depth, 1);
+    assert!(blocked.blocked_at.is_some());
 }
 
 const API_TOKEN: &str = "lux-continuation-api-token";
@@ -535,7 +668,7 @@ async fn test_put_continuation_state_updates_run_state_json_only() {
     let lux_dir = proj.path.join(".lux");
     fs::create_dir_all(&lux_dir).expect("create .lux dir");
 
-    let initial = RunState::idle(&proj.path).expect("idle state");
+    let mut initial = RunState::idle(&proj.path).expect("idle state");
     initial
         .save(&proj.path)
         .expect("save initial run-state.json");
@@ -546,7 +679,7 @@ async fn test_put_continuation_state_updates_run_state_json_only() {
         proj.path.to_str().unwrap().replace(' ', "%20")
     );
     let body = json!({
-        "expected_seq": 0,
+        "expected_seq": initial.seq,
         "continuation_count": 3,
         "status": "Active"
     });
@@ -568,7 +701,7 @@ async fn test_put_continuation_state_updates_run_state_json_only() {
 
     let updated = RunState::load(&proj.path).expect("load updated run-state");
     assert_eq!(updated.continuation_count, 3);
-    assert_eq!(updated.seq, 1);
+    assert_eq!(updated.seq, initial.seq + 1);
 }
 
 #[tokio::test]
@@ -577,7 +710,7 @@ async fn test_put_continuation_state_stale_seq_returns_409() {
     let lux_dir = proj.path.join(".lux");
     fs::create_dir_all(&lux_dir).expect("create .lux dir");
 
-    let initial = RunState::idle(&proj.path).expect("idle state");
+    let mut initial = RunState::idle(&proj.path).expect("idle state");
     initial
         .save(&proj.path)
         .expect("save initial run-state.json");
@@ -613,7 +746,9 @@ async fn test_put_continuation_state_status_conflict_returns_409() {
 
     let mut initial = RunState::idle(&proj.path).expect("idle state");
     initial.status = RunStatus::Planning.to_string();
-    initial.save(&proj.path).expect("save initial run-state.json");
+    initial
+        .save(&proj.path)
+        .expect("save initial run-state.json");
 
     let app = router(test_gateway_state());
     let uri = format!(
@@ -622,7 +757,7 @@ async fn test_put_continuation_state_status_conflict_returns_409() {
     );
 
     let body = json!({
-        "expected_seq": 0,
+        "expected_seq": initial.seq,
         "expected_status": "ExecutingTicket",
         "continuation_count": 1
     });
@@ -657,7 +792,9 @@ fn test_roadmap_pushed_phase_requires_pushed_at_and_push_git_sha() {
         authoritative: true,
     };
 
-    let err = roadmap.validate().expect_err("Pushed phase without pushed_at should fail validation");
+    let err = roadmap
+        .validate()
+        .expect_err("Pushed phase without pushed_at should fail validation");
     assert!(
         err.to_string().contains("pushed_at"),
         "error should mention pushed_at, got: {err}"
@@ -668,13 +805,17 @@ fn test_roadmap_pushed_phase_requires_pushed_at_and_push_git_sha() {
 fn test_run_state_save_rollback_on_failed_post_write_validation() {
     let temp_dir = TestTempDir::new("post-write-rollback");
     let mut state = RunState::idle(temp_dir.path()).expect("idle state should be created");
-    state.save(temp_dir.path()).expect("initial save should succeed");
+    state
+        .save(temp_dir.path())
+        .expect("initial save should succeed");
 
-    let original = fs::read_to_string(RunState::path(temp_dir.path()))
+    let _original = fs::read_to_string(RunState::path(temp_dir.path()))
         .expect("original run-state should exist");
 
     state.status = "Planning".to_string();
-    state.save(temp_dir.path()).expect("valid transition should succeed");
+    state
+        .save(temp_dir.path())
+        .expect("valid transition should succeed");
 
     let path = RunState::path(temp_dir.path());
     let valid_content = fs::read_to_string(&path).expect("valid run-state should exist");
@@ -682,8 +823,7 @@ fn test_run_state_save_rollback_on_failed_post_write_validation() {
     fs::write(&path, valid_content.replace("\"Planning\"", "\"Active\""))
         .expect("corrupt the on-disk file to simulate post-write validation failure");
 
-    let load_err = RunState::load(temp_dir.path())
-        .expect_err("corrupted status should fail load");
+    let load_err = RunState::load(temp_dir.path()).expect_err("corrupted status should fail load");
     assert!(
         load_err.to_string().contains("unknown RunStatus: Active"),
         "unexpected error: {load_err}"
@@ -749,10 +889,14 @@ fn test_migration_rollback_preserves_legacy_on_save_failure() {
     let restore_permissions = std::fs::Permissions::from_mode(0o755);
     std::fs::set_permissions(&lux_dir, restore_permissions).expect("chmod 0o755 should succeed");
 
-    assert!(result.is_err(), "migration should fail when .lux dir is read-only");
+    assert!(
+        result.is_err(),
+        "migration should fail when .lux dir is read-only"
+    );
     let err_msg = result.unwrap_err().to_string();
     assert!(
-        err_msg.contains("legacy continuation migration failed") || err_msg.contains("failed to write"),
+        err_msg.contains("legacy continuation migration failed")
+            || err_msg.contains("failed to write"),
         "error should indicate migration failure, got: {err_msg}"
     );
 

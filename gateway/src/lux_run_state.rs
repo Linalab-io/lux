@@ -18,6 +18,9 @@ pub const RUN_STATE_SCHEMA_VERSION: u32 = 1;
 pub enum RunStatus {
     Idle,
     Planning,
+    Planned,
+    DispatchReady,
+    Executing,
     AwaitingApproval,
     AwaitingEvidence,
     ExecutingTicket,
@@ -26,6 +29,8 @@ pub enum RunStatus {
     AwaitingFeedback,
     Paused,
     Blocked,
+    RetryReady,
+    Resumed,
     Completed,
     Failed,
     Interrupted,
@@ -104,6 +109,9 @@ impl fmt::Display for RunStatus {
         f.write_str(match self {
             Self::Idle => "Idle",
             Self::Planning => "Planning",
+            Self::Planned => "planned",
+            Self::DispatchReady => "dispatch_ready",
+            Self::Executing => "executing",
             Self::AwaitingApproval => "AwaitingApproval",
             Self::AwaitingEvidence => "AwaitingEvidence",
             Self::ExecutingTicket => "ExecutingTicket",
@@ -112,6 +120,8 @@ impl fmt::Display for RunStatus {
             Self::AwaitingFeedback => "AwaitingFeedback",
             Self::Paused => "Paused",
             Self::Blocked => "Blocked",
+            Self::RetryReady => "retry_ready",
+            Self::Resumed => "resumed",
             Self::Completed => "Completed",
             Self::Failed => "Failed",
             Self::Interrupted => "Interrupted",
@@ -168,10 +178,14 @@ pub struct RunState {
     pub status: String,
     pub goal_id: Option<String>,
     pub milestone_id: Option<String>,
+    #[serde(default)]
+    pub ticket_id: Option<String>,
     pub current_ticket_id: Option<String>,
     pub approval: ApprovalState,
     pub resume: ResumeData,
     pub executor: ExecutorInfo,
+    #[serde(default)]
+    pub verification_policy: Option<String>,
     pub last_error: Option<String>,
     #[serde(default)]
     pub stop_reason: Option<String>,
@@ -194,6 +208,26 @@ pub struct RunState {
     pub updated_at: String,
     #[serde(default)]
     pub continuation_status: Option<String>,
+    #[serde(default)]
+    pub planned_at: Option<String>,
+    #[serde(default)]
+    pub dispatch_ready_at: Option<String>,
+    #[serde(default)]
+    pub executing_at: Option<String>,
+    #[serde(default)]
+    pub verifying_at: Option<String>,
+    #[serde(default)]
+    pub blocked_at: Option<String>,
+    #[serde(default)]
+    pub retry_ready_at: Option<String>,
+    #[serde(default)]
+    pub resumed_at: Option<String>,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+    #[serde(default)]
+    pub failed_at: Option<String>,
+    #[serde(default)]
+    pub quarantined_at: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -229,10 +263,12 @@ impl RunState {
             status: RunStatus::Idle.to_string(),
             goal_id: None,
             milestone_id: None,
+            ticket_id: None,
             current_ticket_id: None,
             approval: ApprovalState::default(),
             resume: ResumeData::default(),
             executor: ExecutorInfo::default(),
+            verification_policy: None,
             last_error: None,
             stop_reason: None,
             continuation_count: 0,
@@ -246,6 +282,16 @@ impl RunState {
             team_run_id: None,
             updated_at: Utc::now().to_rfc3339(),
             continuation_status: None,
+            planned_at: None,
+            dispatch_ready_at: None,
+            executing_at: None,
+            verifying_at: None,
+            blocked_at: None,
+            retry_ready_at: None,
+            resumed_at: None,
+            completed_at: None,
+            failed_at: None,
+            quarantined_at: None,
         })
     }
 
@@ -278,8 +324,10 @@ impl RunState {
     }
 
     /// Atomically write to disk. Increments seq. Updates updated_at.
-    pub fn save(&self, project_path: &Path) -> Result<()> {
+    pub fn save(&mut self, project_path: &Path) -> Result<()> {
         self.validate()?;
+        self.seq += 1;
+        self.updated_at = Utc::now().to_rfc3339();
 
         let path = Self::path(project_path);
         if let Some(parent) = path.parent() {
@@ -390,18 +438,62 @@ impl RunState {
         }
 
         patch(&mut state);
-        state.seq += 1;
-        state.updated_at = Utc::now().to_rfc3339();
         state.save(project_path)?;
         Ok(state)
     }
 
     /// Transition status. Returns new state with incremented seq and updated timestamp.
     pub fn transition_to(&mut self, new_status: RunStatus, _reason: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
         self.status = new_status.to_string();
-        self.seq += 1;
-        self.updated_at = Utc::now().to_rfc3339();
+        self.updated_at = now.clone();
+        self.record_transition_timestamp(&new_status, now);
         Ok(())
+    }
+
+    pub fn transition_with_seq_check(
+        project_path: &Path,
+        expected_seq: u64,
+        next: RunStatus,
+        reason: &str,
+        patch: impl FnOnce(&mut Self),
+    ) -> Result<Self> {
+        let mut state = Self::load(project_path)?;
+        if state.seq != expected_seq {
+            bail!(
+                "stale seq: expected {} but current seq is {}",
+                expected_seq,
+                state.seq
+            );
+        }
+        state.transition_to(next, reason)?;
+        patch(&mut state);
+        state.save(project_path)?;
+        Ok(state)
+    }
+
+    fn record_transition_timestamp(&mut self, status: &RunStatus, timestamp: String) {
+        match status {
+            RunStatus::Planning | RunStatus::Planned => self.planned_at = Some(timestamp),
+            RunStatus::DispatchReady => self.dispatch_ready_at = Some(timestamp),
+            RunStatus::Executing | RunStatus::ExecutingTicket => {
+                self.executing_at = Some(timestamp)
+            }
+            RunStatus::Verifying => self.verifying_at = Some(timestamp),
+            RunStatus::Blocked => self.blocked_at = Some(timestamp),
+            RunStatus::RetryReady => self.retry_ready_at = Some(timestamp),
+            RunStatus::Resumed | RunStatus::Recovering => self.resumed_at = Some(timestamp),
+            RunStatus::Completed => self.completed_at = Some(timestamp),
+            RunStatus::Failed => self.failed_at = Some(timestamp),
+            RunStatus::Quarantined => self.quarantined_at = Some(timestamp),
+            RunStatus::Idle
+            | RunStatus::AwaitingApproval
+            | RunStatus::AwaitingEvidence
+            | RunStatus::AwaitingPlayStart
+            | RunStatus::AwaitingFeedback
+            | RunStatus::Paused
+            | RunStatus::Interrupted => {}
+        }
     }
 
     /// Migrate legacy continuation-state.json if present.
@@ -533,6 +625,9 @@ impl std::str::FromStr for RunStatus {
         match s {
             "Idle" => Ok(Self::Idle),
             "Planning" => Ok(Self::Planning),
+            "planned" | "Planned" => Ok(Self::Planned),
+            "dispatch_ready" | "DispatchReady" => Ok(Self::DispatchReady),
+            "executing" | "Executing" => Ok(Self::Executing),
             "AwaitingApproval" => Ok(Self::AwaitingApproval),
             "AwaitingEvidence" => Ok(Self::AwaitingEvidence),
             "ExecutingTicket" => Ok(Self::ExecutingTicket),
@@ -541,6 +636,8 @@ impl std::str::FromStr for RunStatus {
             "AwaitingFeedback" => Ok(Self::AwaitingFeedback),
             "Paused" => Ok(Self::Paused),
             "Blocked" => Ok(Self::Blocked),
+            "retry_ready" | "RetryReady" => Ok(Self::RetryReady),
+            "resumed" | "Resumed" => Ok(Self::Resumed),
             "Completed" => Ok(Self::Completed),
             "Failed" => Ok(Self::Failed),
             "Interrupted" => Ok(Self::Interrupted),
