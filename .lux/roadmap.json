@@ -41,6 +41,14 @@
       "pushed_at": "2026-05-15T07:10:00Z",
       "push_git_sha": "f50867bac544500c317fbd59b154cd9a7c91483e",
       "push_evidence_path": ".sisyphus/evidence/task-t3-unity-benchmark.txt"
+    },
+    {
+      "name": "M6: Autonomous — Spec-to-Ticket-to-Execution Pipeline",
+      "status": "planned",
+      "evidence_path": null,
+      "pushed_at": null,
+      "push_git_sha": null,
+      "push_evidence_path": null
     }
   ],
   "capabilities": [

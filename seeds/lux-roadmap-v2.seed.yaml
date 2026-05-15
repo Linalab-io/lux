@@ -113,6 +113,24 @@ acceptance_criteria:
       Session data survives tool switch (history, context preserved).
       No regressions in single-tool workflow.
 
+  m6_autonomous_pipeline:
+    status: planned
+    description: |
+      Full autonomous pipeline: Spec convergence → Ticket generation → OpenCode execution → T3 Unity verification.
+      The system drives itself from a locked spec to a pushed milestone without human intervention.
+      Canonical status is tracked in .lux/roadmap.json as M6.
+    deliverables:
+      - "Spec-to-ticket generator: locked spec produces execution-grade tickets automatically"
+      - "Ticket-to-OpenCode executor: drives OpenCode until ticket acceptance criteria are met"
+      - "T3 Unity verification gate: batchmode compile (600s) + scene smoke (300s) before push"
+      - "Autonomous blocker recovery: self-healing on common blockers without human intervention"
+      - "Push evidence recorder: captures T3 output as push_evidence_path before milestone push"
+      - "Roadmap push guard: M6 status transitions to pushed only after T3 evidence is present"
+    verification: |
+      cargo run -- roadmap status shows M6 as planned (not pushed).
+      M6 push is rejected without push_evidence_path (same rule as M1-M5).
+      Full autonomous run from spec to T3 evidence completes without human intervention.
+
 ontology:
   name: LuxRoadmapV2
   description: LUX roadmap v2 — local-first Unity Editor AI automation toolkit (no remote streaming)

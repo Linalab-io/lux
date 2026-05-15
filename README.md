@@ -484,7 +484,7 @@ Lux/
 | **M3** | 실행 등급 티켓 스키마 |
 | **M4** | 티켓 기반 OpenCode Hook 실행기 |
 | **M5** | 블로커 자동 해결 그래프 |
-| **Autonomous** | Spec → Ticket → OpenCode 완전 자율 파이프라인 |
+| **M6 / Autonomous** | Spec → Ticket → OpenCode 완전 자율 파이프라인 (계획됨) |
 
 ### 범위 외
 

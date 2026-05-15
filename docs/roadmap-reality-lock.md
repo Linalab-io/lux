@@ -52,6 +52,12 @@ The following milestones are sequenced after the **Roadmap Reality Lock** is est
 - **Success Criteria**: Autonomous blocker resolution orchestration without human intervention where possible.
 - **Status**: NOT completed by Roadmap Reality Lock plan.
 
+### M6: Autonomous — Spec-to-Ticket-to-Execution Pipeline
+- **Entry Criteria**: M5 complete; blocker auto-resolution proven.
+- **Description**: Full autonomous pipeline from spec convergence through ticket generation to OpenCode execution and T3 Unity verification. The system drives itself from a locked spec to a pushed milestone without human intervention.
+- **Success Criteria**: Spec → Ticket → OpenCode execution → T3 Unity verification completes autonomously; milestone is pushed only after T3 evidence is recorded.
+- **Status**: Planned — next phase after M5.
+
 ## Default Decisions & Invariants
 
 - **Canonical SSoT**: `.lux/roadmap.json` is the single source of truth for roadmap and status.

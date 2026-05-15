@@ -224,6 +224,60 @@ fn lux_roadmap_rejects_non_authoritative_file() {
     assert!(matches!(roadmap_error, RoadmapError::Invalid { .. }));
 }
 
+#[test]
+fn lux_roadmap_m6_autonomous_appears_in_roadmap() {
+    let temp = TestTempDir::new();
+    let roadmap_path = temp.path().join(".lux/roadmap.json");
+    let mut roadmap = RoadmapReality::default();
+    roadmap.phases.push(RoadmapPhase {
+        name: "M6: Autonomous — Spec-to-Ticket-to-Execution Pipeline".to_string(),
+        status: RoadmapPhaseStatus::Planned,
+        evidence_path: None,
+        pushed_at: None,
+        push_git_sha: None,
+        push_evidence_path: None,
+    });
+
+    save(temp.path(), &roadmap).expect("roadmap with M6 should save");
+    let loaded = load(temp.path()).expect("roadmap with M6 should load");
+
+    let m6 = loaded
+        .phases
+        .iter()
+        .find(|p| p.name.contains("M6") || p.name.contains("Autonomous"))
+        .expect("M6/Autonomous phase must appear in roadmap");
+    assert_eq!(m6.status, RoadmapPhaseStatus::Planned);
+    assert!(m6.push_evidence_path.is_none());
+    assert!(m6.pushed_at.is_none());
+    assert!(m6.push_git_sha.is_none());
+
+    let content = std::fs::read_to_string(&roadmap_path).expect("roadmap should be readable");
+    assert!(content.contains("M6") || content.contains("Autonomous"));
+}
+
+#[test]
+fn lux_roadmap_m6_cannot_be_pushed_without_evidence() {
+    let temp = TestTempDir::new();
+    let mut roadmap = RoadmapReality::default();
+    roadmap.phases.push(RoadmapPhase {
+        name: "M6: Autonomous — Spec-to-Ticket-to-Execution Pipeline".to_string(),
+        status: RoadmapPhaseStatus::Pushed,
+        evidence_path: None,
+        pushed_at: Some("2026-05-15T00:00:00Z".to_string()),
+        push_git_sha: Some("0123456789abcdef".to_string()),
+        push_evidence_path: None,
+    });
+
+    let error = save(temp.path(), &roadmap)
+        .expect_err("M6 pushed without push_evidence_path must be rejected");
+    let roadmap_error = error
+        .downcast_ref::<RoadmapError>()
+        .expect("error should preserve roadmap error type");
+
+    assert!(matches!(roadmap_error, RoadmapError::Invalid { .. }));
+    assert!(roadmap_error.to_string().contains("push_evidence_path"));
+}
+
 fn populated_roadmap() -> RoadmapReality {
     let mut experimental_flags = HashMap::new();
     experimental_flags.insert("native_opencode".to_string(), true);
