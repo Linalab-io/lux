@@ -1654,8 +1654,7 @@ async fn get_continuation_state(
     Query(query): Query<LuxProjectQuery>,
 ) -> Result<Json<crate::lux_continuation_state::ContinuationState>, Response> {
     let project_path = Path::new(&query.project_path);
-    let run_state = crate::lux_run_state::RunState::load(project_path)
-        .map_err(internal_error)?;
+    let run_state = crate::lux_run_state::RunState::load(project_path).map_err(internal_error)?;
     let state = crate::lux_continuation_state::ContinuationState {
         session_id: run_state.executor.job_id.clone(),
         continuation_count: run_state.continuation_count,
@@ -1664,8 +1663,10 @@ async fn get_continuation_state(
         last_ambiguity: None,
         last_ticket_baseline: None,
         current_ticket_id: run_state.current_ticket_id.clone(),
-        status: crate::lux_continuation_state::ContinuationStatus::from_run_status(&run_state.status)
-            .map_err(internal_error)?,
+        status: crate::lux_continuation_state::ContinuationStatus::from_run_status(
+            &run_state.status,
+        )
+        .map_err(internal_error)?,
         started_at: run_state.resume.previous_status.clone(),
         updated_at: run_state.updated_at.clone(),
         stop_reason: run_state.stop_reason.clone(),
@@ -2171,6 +2172,14 @@ async fn create_ticket(
         spec_ref: request.spec_ref,
         created_at: now.clone(),
         updated_at: now,
+        execution_objective: None,
+        allowed_executor: None,
+        dispatch_policy: None,
+        verification_policy: None,
+        command_allowlist: None,
+        evidence_refs: None,
+        blocker_policy: None,
+        non_goals: None,
     };
     let created = FileTicketStore::new(&project_path)
         .create(ticket)

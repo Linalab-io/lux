@@ -15,8 +15,10 @@ use lux::{
     lux_task_dag::{TaskDAG, TaskNode, TaskStatus},
     lux_ticket::{
         is_execution_grade, should_dispatch, validate_execution_grade, BlockerPolicy,
-        DispatchPolicy, FileTicketStore, Ticket, TicketPriority, TicketStatus, TicketStore,
+        DispatchPolicy, FileTicketStore, Ticket, TicketFilter, TicketPriority, TicketStatus,
+        TicketStore,
     },
+    lux_ticket_executor::{Executor, ExecutorOpts, ExecutorStatus, FakeExecutor, OpenCodeExecutor},
     lux_verification::{create_blocker_tickets, CheckCategory, CheckResult, VerificationResult},
 };
 
@@ -356,4 +358,118 @@ fn ticket_command_allowlist_required_for_command_policy() {
 
     ticket.command_allowlist = Some(vec!["cargo test".to_string()]);
     assert!(validate_execution_grade(&ticket).is_ok());
+}
+
+#[test]
+fn ticket_executor_fake_success() {
+    let temp = TestTempDir::new("executor-fake-success");
+    let ticket = execution_grade_ticket("exec-fake-success");
+    let opts = executor_opts(temp.path(), "run-fake-success", &ticket.id);
+    let executor = FakeExecutor::success(&opts.run_id);
+
+    let result = executor
+        .execute(&ticket, &opts)
+        .expect("fake executor should return success");
+
+    assert_eq!(result.status, ExecutorStatus::Success);
+    assert_eq!(result.exit_code, Some(0));
+    let blockers = FileTicketStore::new(temp.path())
+        .list(TicketFilter {
+            status: Some(TicketStatus::Blocked),
+            ..TicketFilter::default()
+        })
+        .expect("blockers should list");
+    assert!(blockers.is_empty());
+}
+
+#[test]
+fn ticket_executor_fake_failure() {
+    let temp = TestTempDir::new("executor-fake-failure");
+    let ticket = execution_grade_ticket("exec-fake-failure");
+    let opts = executor_opts(temp.path(), "run-fake-failure", &ticket.id);
+    let executor = FakeExecutor::failed(&opts.run_id, 17);
+
+    let result = executor
+        .execute(&ticket, &opts)
+        .expect("fake executor should return failure");
+
+    assert_eq!(result.status, ExecutorStatus::Failed);
+    assert_eq!(result.exit_code, Some(17));
+}
+
+#[test]
+fn ticket_executor_missing_opencode() {
+    let temp = TestTempDir::new("executor-missing-opencode");
+    let ticket = execution_grade_ticket("exec-missing-opencode");
+    let opts = executor_opts(temp.path(), "run-missing-opencode", &ticket.id);
+    let executor = OpenCodeExecutor::with_binary("lux-opencode-binary-that-does-not-exist");
+
+    let result = executor
+        .execute(&ticket, &opts)
+        .expect("missing binary should be explicit executor status");
+
+    assert_eq!(result.status, ExecutorStatus::MissingBinary);
+    assert_eq!(result.exit_code, None);
+    assert!(temp.path().join(&result.stdout_path).is_file());
+    assert!(temp.path().join(&result.stderr_path).is_file());
+}
+
+#[test]
+fn ticket_executor_prompt_sanitized() {
+    let temp = TestTempDir::new("executor-prompt-sanitized");
+    let mut ticket = execution_grade_ticket("exec-prompt-sanitized");
+    ticket.title = "safe title; rm -rf . && echo pwned".to_string();
+    ticket.description = "$(touch injected) | cat > owned".to_string();
+    let opts = executor_opts(temp.path(), "run-prompt-sanitized", &ticket.id);
+    let executor = OpenCodeExecutor::new();
+    let prompt_path = temp.path().join(format!(
+        ".lux/evidence/autonomous/{}/prompt.txt",
+        opts.run_id
+    ));
+
+    let argv = executor.command_argv_for_prompt(&prompt_path);
+
+    assert_eq!(argv.len(), 3);
+    assert_eq!(argv[1], "-p");
+    for arg in argv.iter().skip(1) {
+        let arg = arg.to_string_lossy();
+        assert!(!arg.contains("rm -rf"));
+        assert!(!arg.contains("$("));
+        assert!(!arg.contains("|"));
+        assert!(!arg.contains("&&"));
+    }
+    let prompt = OpenCodeExecutor::build_prompt(&ticket, &opts);
+    assert!(prompt.contains("safe title; rm -rf . && echo pwned"));
+    assert!(prompt.contains("$(touch injected) | cat > owned"));
+}
+
+#[test]
+fn ticket_executor_result_has_evidence_refs() {
+    let temp = TestTempDir::new("executor-evidence-refs");
+    let ticket = execution_grade_ticket("exec-evidence-refs");
+    let opts = executor_opts(temp.path(), "run-evidence-refs", &ticket.id);
+    let executor = OpenCodeExecutor::with_binary("lux-opencode-binary-that-does-not-exist");
+
+    let result = executor
+        .execute(&ticket, &opts)
+        .expect("executor result should be returned");
+
+    assert!(!result.evidence_refs.is_empty());
+    assert!(result
+        .evidence_refs
+        .iter()
+        .any(|path| path == &format!(".lux/evidence/autonomous/{}/stdout.txt", opts.run_id)));
+    assert!(result
+        .evidence_refs
+        .iter()
+        .all(|path| path.starts_with(".lux/evidence/autonomous/")));
+}
+
+fn executor_opts(project_path: &Path, run_id: &str, ticket_id: &str) -> ExecutorOpts {
+    ExecutorOpts {
+        run_id: run_id.to_string(),
+        ticket_id: ticket_id.to_string(),
+        working_dir: project_path.to_path_buf(),
+        timeout_secs: 1,
+    }
 }

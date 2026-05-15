@@ -20,19 +20,9 @@ impl ContinuationStatus {
         let lower = status.to_ascii_lowercase();
         Ok(match lower.as_str() {
             "idle" => Self::Idle,
-            "planning"
-            | "awaitingapproval"
-            | "awaitingevidence"
-            | "executingticket"
-            | "verifying"
-            | "awaitingplaystart"
-            | "awaitingfeedback"
-            | "paused"
-            | "blocked"
-            | "recovering"
-            | "active"
-            | "running"
-            | "awaiting_approval" => Self::Active,
+            "planning" | "awaitingapproval" | "awaitingevidence" | "executingticket"
+            | "verifying" | "awaitingplaystart" | "awaitingfeedback" | "paused" | "blocked"
+            | "recovering" | "active" | "running" | "awaiting_approval" => Self::Active,
             "completed" | "stopped" | "interrupted" | "quarantined" => Self::Stopped,
             "failed" | "error" => Self::Error,
             _ => bail!("unknown ContinuationStatus mapping for RunStatus: {status}"),

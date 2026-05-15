@@ -21,7 +21,9 @@ use crate::{
     lux_run_state::{RunState, RunStatus},
     lux_task_dag::{TaskDAG, TaskNodeProjection, TaskStatus},
     lux_team_profile::{RoleMapping, TeamProfile, TeamSizePreset},
-    lux_verification::{check_verification_gate, required_tier_for_action, TieredVerificationResult},
+    lux_verification::{
+        check_verification_gate, required_tier_for_action, TieredVerificationResult,
+    },
 };
 
 pub const MILESTONE_PUSH_TRANSITION: &str = "milestone_push";

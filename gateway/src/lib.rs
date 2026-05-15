@@ -32,6 +32,7 @@ pub mod lux_task_dag;
 pub mod lux_team_profile;
 pub mod lux_terminal;
 pub mod lux_ticket;
+pub mod lux_ticket_executor;
 pub mod lux_triage;
 pub mod lux_verification;
 pub mod lux_worktree;

@@ -17,6 +17,7 @@ use lux::lux_build::{
 use lux::lux_event_log::{
     EventFilter, EventLogStore, FileEventLogStore, PlayEvent, PlayEventType, SessionMetadata,
 };
+use lux::lux_run_state::RunState;
 use lux::lux_spec::{
     lux_init, lux_load, lux_save, AssessmentResult, DomainSpec, PhaseResult, PillarRating,
     PillarStatus, SchellEvaluation, SpecDomains, SpecProject, SpecStatus, TetradResult,
@@ -24,7 +25,6 @@ use lux::lux_spec::{
 use lux::lux_ticket::{
     FileTicketStore, Ticket, TicketFilter, TicketPriority, TicketStatus, TicketStore,
 };
-use lux::lux_run_state::RunState;
 use lux::lux_verification::{verify_all, CheckCategory, VerificationMode};
 use serde_json::json;
 use tempfile::TempDir;
