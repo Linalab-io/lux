@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.0",
+  "updated_at": "2026-05-15T07:10:00Z",
+  "phases": [
+    {
+      "name": "M1: Canonical 9-Domain Schema & Defaults",
+      "status": "complete",
+      "evidence_path": null,
+      "pushed_at": null,
+      "push_git_sha": null,
+      "push_evidence_path": null
+    },
+    {
+      "name": "M2: Ambiguity Convergence & Socratic Loop",
+      "status": "complete",
+      "evidence_path": null,
+      "pushed_at": null,
+      "push_git_sha": null,
+      "push_evidence_path": null
+    },
+    {
+      "name": "M3: Execution-Grade Ticket Schema",
+      "status": "complete",
+      "evidence_path": null,
+      "pushed_at": null,
+      "push_git_sha": null,
+      "push_evidence_path": null
+    },
+    {
+      "name": "M4: Ticket-Driven OpenCode Hook Executor",
+      "status": "complete",
+      "evidence_path": null,
+      "pushed_at": null,
+      "push_git_sha": null,
+      "push_evidence_path": null
+    },
+    {
+      "name": "M5: Blocker Auto-Resolution Graph + Todo Continuation",
+      "status": "pushed",
+      "evidence_path": ".sisyphus/evidence/task-t3-unity-benchmark.txt",
+      "pushed_at": "2026-05-15T07:10:00Z",
+      "push_git_sha": "f50867bac544500c317fbd59b154cd9a7c91483e",
+      "push_evidence_path": ".sisyphus/evidence/task-t3-unity-benchmark.txt"
+    }
+  ],
+  "capabilities": [
+    "todo-continuation",
+    "bounded-blocker-resolution",
+    "t3-unity-verification",
+    "run-state-governance",
+    "team-mode-producer-only"
+  ],
+  "evidence_refs": [
+    ".sisyphus/evidence/task-t3-unity-benchmark.txt"
+  ],
+  "experimental_flags": {
+    "remote_webrtc": false
+  },
+  "authoritative": true
+}
